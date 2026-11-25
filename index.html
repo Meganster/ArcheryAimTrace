@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ArcheryAimTrace</title>
+  <link rel="stylesheet" href="styles.css?v=aim-pipeline-163">
+  <link rel="stylesheet" href="theme-graph-paper.css?v=proto-2" id="graphThemeLink">
+  <meta name="theme-color" content="#061014" id="themeMetaColor">
+  <script>
+    (function () {
+      const KEY = "of-theme-proto";
+      const MODES = ["paper", "dark", "classic"];
+      function normalize(value) {
+        if (value === "1") return "paper";
+        if (value === "0") return "classic";
+        return MODES.includes(value) ? value : "paper";
+      }
+      const mode = normalize(localStorage.getItem(KEY));
+      const link = document.getElementById("graphThemeLink");
+      if (link) {
+        link.disabled = mode === "classic";
+      }
+      let themeColor = "#061014";
+      if (mode === "dark") {
+        document.documentElement.setAttribute("data-theme", "dark");
+        themeColor = "#10171a";
+      } else {
+        document.documentElement.removeAttribute("data-theme");
+        if (mode === "paper") {
+          themeColor = "#f9f8f2";
+        }
+      }
+      const meta = document.getElementById("themeMetaColor");
+      if (meta) {
+        meta.setAttribute("content", themeColor);
+      }
+    })();
+  </script>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="favicon.ico?v=aim-pipeline-163" sizes="any">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png?v=aim-pipeline-163">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png?v=aim-pipeline-163">
+</head>
+<body>
+  <div class="app">
+    <header>
+      <div class="brand">
+        <img class="mark" src="icon-192.png?v=aim-pipeline-163" width="38" height="38" alt="">
+        <div>
+          <h1>ArcheryAimTrace</h1>
+          <p class="subtitle">Real-time bow movement, release quality, and practice history</p>
+        </div>
+      </div>
+
+      <!-- Tab Navigation Bar -->
+      <nav class="tab-navigation" aria-label="Main App Navigation">
+        <button id="navDashboardBtn" class="nav-tab active">
+          <span class="nav-icon">📈</span> Dashboard
+        </button>
+        <button id="navTrainingBtn" class="nav-tab">
+          <span class="nav-icon">🏹</span> Steady Aim
+        </button>
+        <button id="navHistoryBtn" class="nav-tab">
+          <span class="nav-icon">🎯</span> Saved Shots
+        </button>
+
+        <button id="navSettingsBtn" class="nav-tab">
+          <span class="nav-icon">⚙️</span> Settings
+        </button>
+
+      </nav>
+
+      <div class="header-status-group">
+
+        <div id="syncBadge" class="status sync-local clickable" title="Configure Cloud Sync">
+          <span class="dot"></span>
+          <span id="syncText">Local-Only</span>
+        </div>
+        <div id="statusBadge" class="status clickable" title="Connect Sensor">
+          <span class="dot"></span>
+          <span id="statusText">Disconnected</span>
+          <span id="batteryBadge" class="battery-status hidden" title="Battery Level">
+            <span id="batteryText">--%</span>
+          </span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Mobile Compatibility Banner -->
+    <div id="mobileAlertBanner" class="mobile-alert-banner hidden">
+      <span class="warning-icon">⚠️</span>
+      <div class="alert-content">
+        <strong>Browser Notice</strong>
+        <p id="mobileAlertText">Web Bluetooth is not supported in this browser.</p>
+      </div>
+      <button id="closeMobileAlertBtn" class="close-alert-btn">&times;</button>
+    </div>
+
+    <main class="main-workspace">
+      <!-- 1. Dashboard View (Active by default) -->
+      <div id="tabDashboard" class="tab-view active-view">
+        <section class="dashboard">
+
+
+          <div class="visualizer-row">
+            <section class="orientation-visualizer panel" aria-label="Live bow orientation visualizer">
+              <div class="orientation-copy">
+                <span class="eyebrow">Live orientation</span>
+                <h2>Bow Orientation</h2>
+              </div>
+              <div class="orientation-readouts">
+                <span>Cal Roll <strong id="orientationRollValue">0.0</strong> deg</span>
+                <span>Cal Pitch <strong id="orientationPitchValue">0.0</strong> deg</span>
+                <span>Yaw <strong id="orientationYawValue">0.0</strong> deg</span>
+              </div>
+
+              <canvas id="orientationCanvas"></canvas>
+            </section>
+
+            <div class="panel level-card" id="levelCard">
+              <div class="level-head">
+                <span>Bow Cant</span>
+                <strong><span id="cantValue">0.0</span><small> deg</small></strong>
+              </div>
+              <div class="bubble-level" aria-label="Live bow cant bubble level">
+                <div class="level-tick level-tick-left"></div>
+                <div class="level-center-band"></div>
+                <div class="level-tick level-tick-right"></div>
+                <div id="levelBubble" class="level-bubble"></div>
+              </div>
+              <small id="levelAlertText" class="level-alert">Level</small>
+
+            </div>
+          </div>
+
+
+
+          <div class="panel chart-panel">
+            <div class="panel-head">
+              <div class="chart-header-title">
+                <h2 id="chartTitle">Shot Sequence Trace</h2>
+                <div class="chart-metrics-inline">
+                  <span class="inline-metric-item" title="Live telemetry stream rate">
+                    <span class="metric-dot live"></span>
+                    <span id="hzValue">0</span> Hz
+                  </span>
+                  <span class="metric-divider">/</span>
+                  <span class="inline-metric-item" title="Shots detected during active session">
+                    <strong>Shots:</strong> <span id="shotCountValue">0</span>
+                  </span>
+                  <span class="metric-divider">/</span>
+                  <span id="micVolumeItem" class="inline-metric-item mic-volume-item hidden" title="Acoustic Envelope">
+                    <span class="metric-dot mic-active"></span>
+                    <strong>Mic:</strong>
+                    <div class="vol-bar-container"><div id="volBar" class="vol-bar clicker-bar"></div></div>
+                  </span>
+                  <span class="metric-divider">/</span>
+                  <span id="uploadStatusItem" class="inline-metric-item upload-status hidden" title="Importing offline shots and their saved traces from the device">
+                    <span class="metric-dot upload"></span>
+                    <span class="upload-label">Importing</span>&nbsp;<span id="uploadCountValue">0</span>
+                  </span>
+                  <span class="metric-divider">/</span>
+                  <span id="recordStatusItem" class="inline-metric-item record-status hidden" title="Manual trace recording in progress">
+                    <span class="metric-dot rec"></span>
+                    <span id="recordTimeText">0.0s</span>&nbsp;<span class="record-smp"><span id="recordSamplesText">0</span> smp</span>
+                  </span>
+                </div>
+              </div>
+              <div class="chart-toggles">
+                <button id="recordToggleBtn" class="record-toggle-btn" disabled title="Connect a sensor to record a manual trace">
+                  <span class="rec-dot"></span><span id="recordToggleLabel">Record</span>
+                </button>
+                <button id="discardRecordBtn" class="toggle-btn discard-btn hidden" title="Discard recording">Discard</button>
+                <span class="chart-toggle-divider"></span>
+                <button id="viewTraceBtn" class="toggle-btn">Quaternion</button>
+                <button id="viewTargetBtn" class="toggle-btn active">Pin Float</button>
+                <span class="chart-toggle-divider" id="liveDurationDivider"></span>
+                <div class="live-duration-container" id="liveDurationContainer" title="Length of live data shown on plots">
+                  <label for="liveDurationSlider">Live: <strong id="liveDurationValue">10</strong>s</label>
+                  <input type="range" id="liveDurationSlider" min="3" max="30" step="1" value="10">
+                </div>
+                <div class="live-duration-container" id="targetViewModeContainer" title="Auto fit keeps the target and trace in view at the same scale. Physical keeps a fixed scale. Normalized uses a fixed scale for live tracking and fits the trace during shot review.">
+                  <label for="targetViewModeSelect">View: <strong id="targetViewModeLabel">Normalized</strong></label>
+                  <select id="targetViewModeSelect" aria-label="Target view mode">
+                    <option value="fit">Auto fit — target + trace</option>
+                    <option value="normalized" selected>Normalized</option>
+                    <option value="physical">Physical target face</option>
+                  </select>
+                </div>
+                <div class="live-duration-container target-distance-container" id="targetDistanceContainer" title="Match the target face to the shooting distance">
+                  <label for="targetDistanceSelect">Target: <strong id="targetFaceLabel">70m · 122 cm face</strong></label>
+                  <select id="targetDistanceSelect" aria-label="Target distance preset">
+                    <option value="18">18 m</option>
+                    <option value="30">30 m</option>
+                    <option value="50">50 m</option>
+                    <option value="60">60 m</option>
+                    <option value="70" selected>70 m</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <canvas id="traceCanvas"></canvas>
+            <div id="reviewScrubBar" class="review-scrub-bar hidden" aria-label="Trace timeline scrubber">
+              <button id="replayTraceBtn" class="play-btn" title="Play replay" aria-label="Play replay">
+                <svg class="play-icon icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
+                <svg class="play-icon icon-pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="4.5" width="4" height="15" rx="1.2"/><rect x="14" y="4.5" width="4" height="15" rx="1.2"/></svg>
+              </button>
+              <span id="traceScrubValue" class="scrub-time">0.0s</span>
+              <div class="scrub-track">
+                <div id="tracePhaseRail" class="trace-phase-rail" aria-hidden="true">
+                  <span class="phase-hold"></span>
+                  <span class="phase-break"></span>
+                  <span class="phase-release"></span>
+                  <span class="phase-follow"></span>
+                </div>
+                <input id="traceScrubSlider" type="range" min="0" max="1000" step="1" value="1000" aria-label="Scrub trace position">
+              </div>
+              <div class="speed-controls" aria-label="Replay speed" title="Replay speed (scroll or pinch the trace to zoom)">
+                <button id="speedDownBtn" class="mini-icon-btn" title="Slower replay">&minus;</button>
+                <span id="speedValue" class="speed-value">0.25&times;</span>
+                <button id="speedUpBtn" class="mini-icon-btn" title="Faster replay">+</button>
+              </div>
+            </div>
+            <div id="reviewCameraControls" class="review-camera-controls hidden" aria-label="Experimental trace camera">
+              <span class="note">View · experimental</span>
+              <button type="button" data-camera-mode="aim" title="Fit the aiming window before the detector">Aim</button>
+              <button type="button" data-camera-mode="full" title="Fit all projectable points, up to 80 degrees from the target">Full trace</button>
+              <button type="button" data-camera-mode="auto" title="Fit the trajectory as it plays">Auto</button>
+              <span id="reviewCameraStatus" class="note" aria-live="off"></span>
+              <span class="note camera-hint">Scroll / pinch to zoom · drag to pan</span>
+            </div>
+            <div id="reviewBanner" class="review-overlay hidden">
+              <div class="review-details">
+                <strong>Trace Review Mode</strong>
+                <span id="reviewInfo">--</span>
+                <span id="reviewRangeEst" class="note" style="margin-left: 8px; font-weight: 600; color: var(--cyan);"></span>
+              </div>
+              <div id="reviewCompareField" class="review-compare-field">
+                <label for="reviewCompareSelect">Compare with</label>
+                <select id="reviewCompareSelect" title="Overlay another saved shot on the target trace">
+                  <option value="">None</option>
+                </select>
+              </div>
+              <span id="reviewCompareLegend" class="review-compare-legend hidden" aria-hidden="true">
+                <span class="legend-current">Current</span>
+                <span class="legend-compare">Compare</span>
+              </span>
+              <button id="exportShotBtn" class="accent mini-btn" title="Export this single shot to a JSON file">Export Shot</button>
+              <button id="exitReviewBtn" class="primary mini-btn">Exit Review</button>
+            </div>
+            <div id="reviewOfflineReport" hidden></div>
+
+          </div>
+
+          <!-- Recent Shots Panel -->
+          <div class="panel recent-shots-panel" id="recentShotsPanel">
+            <div class="panel-head">
+              <h2>Recent Shots</h2>
+              <span class="note" style="font-size: 11px;">Last 5 Shots</span>
+            </div>
+            <div class="recent-shots-grid" id="recentShotsList">
+              <p class="note" style="padding: 12px; text-align: center; width: 100%;">No shots captured in this session yet.</p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Training View (Hidden by default) -->
+      <div id="tabTraining" class="tab-view hidden-view">
+        <section class="training-workspace">
+          <!-- Training Setup & Controls -->
+          <div class="panel training-control-card">
+            <div class="panel-head">
+              <h2>Steady Aim Trainer</h2>
+              <p class="note">Set your intervals, then follow the sound cues.</p>
+            </div>
+
+            <div class="training-settings-group" style="margin-top: 14px;">
+              <div class="training-interval-fields">
+                <label class="field" for="training_sets">Sets<input id="training_sets" type="number" min="1" max="10" step="1" value="3" required></label>
+                <label class="field" for="training_reps">Reps per set<input id="training_reps" type="number" min="1" max="50" step="1" value="10" required></label>
+                <label class="field" for="training_drawSeconds">Draw (seconds)<input id="training_drawSeconds" type="number" min="1" max="300" step="1" value="7" required></label>
+                <label class="field" for="training_holdSeconds">Hold (seconds)<input id="training_holdSeconds" type="number" min="1" max="300" step="1" value="3" required></label>
+                <label class="field" for="training_repRestSeconds">Rep rest (seconds)<input id="training_repRestSeconds" type="number" min="0" max="600" step="1" value="3" required></label>
+                <label class="field" for="training_setRestSeconds">Set rest (seconds)<input id="training_setRestSeconds" type="number" min="0" max="1800" step="1" value="120" required></label>
+              </div>
+              <p class="note">Sound cues: draw, hold, relax.</p>
+              <strong id="trainingProgress" role="status">3 sets × 10 reps · 10 min 21 sec</strong>
+            </div>
+
+            <div class="training-status-box" style="margin-top: 16px; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-soft); display: flex; flex-direction: column; gap: 4px; align-items: center; text-align: center;">
+              <div id="trainingStatusText" class="training-status-text" style="font-weight: 800; font-size: 14px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--red);">Disconnected</div>
+              <p id="trainingStatusDesc" class="note" style="margin: 0; font-size: 11px;">Connect a sensor or start demo mode to train.</p>
+            </div>
+
+            <div class="training-actions" style="margin-top: 18px; display: flex; flex-direction: column; gap: 8px;">
+              <button id="startTrainingBtn" class="primary start-btn" disabled style="width: 100%;">Start Training</button>
+              <button id="pauseTrainingBtn" class="secondary hidden" type="button" style="width: 100%;">Pause</button>
+              <button id="cancelTrainingBtn" class="danger cancel-btn hidden" style="width: 100%; color: var(--red);">Cancel</button>
+            </div>
+          </div>
+
+          <!-- Training Display & Canvas -->
+          <div class="panel training-display-card">
+            <div id="trainingDisplayDefault" class="training-display-default" style="display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; height: 360px; gap: 12px;">
+              <div class="target-graphic-placeholder" style="font-size: 64px;">🎯</div>
+              <h3>Ready to Begin</h3>
+              <p class="note" style="max-width: 280px; margin: 0;">Choose your intervals, connect the sensor and press Start. Keep this page open during training. Pausing during draw or hold restarts that repetition when you resume.</p>
+            </div>
+
+            <div id="trainingDisplayActive" class="training-display-active hidden" style="display: flex; flex-direction: column; align-items: center; justify-content: center; height: 360px; gap: 24px;">
+              <div class="timer-circle-container" style="position: relative; width: 120px; height: 120px; display: flex; align-items: center; justify-content: center;">
+                <svg class="timer-svg" viewBox="0 0 120 120" style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: rotate(-90deg);">
+                  <circle class="timer-bg" cx="60" cy="60" r="54" style="fill: none; stroke: var(--line); stroke-width: 6;"></circle>
+                  <circle id="timerProgress" class="timer-progress" cx="60" cy="60" r="54" style="fill: none; stroke: var(--cyan); stroke-width: 6; stroke-linecap: round; stroke-dasharray: 339.3; stroke-dashoffset: 0; transition: stroke-dashoffset 0.1s linear;"></circle>
+                </svg>
+                <div id="trainingCountdownVal" class="countdown-val" style="font-size: 38px; font-weight: 900; font-family: 'JetBrains Mono', monospace; color: var(--text);">7</div>
+              </div>
+              <div id="trainingPhaseLabel" class="phase-label" style="font-size: 16px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.1em; color: var(--cyan);">Draw Your Bow</div>
+            </div>
+
+            <div id="trainingTargetWrapper" class="training-target-wrapper hidden" style="display: flex; flex-direction: column; gap: 12px;">
+              <div class="canvas-container" style="position: relative; width: 100%; height: 360px;">
+                <canvas id="trainingTargetCanvas" style="width: 100%; height: 100%; display: block; border-radius: 8px; border: 1px solid var(--line); background: #061014;"></canvas>
+                <div id="trainingCantBadge" class="cant-badge" style="position: absolute; bottom: 12px; left: 12px; padding: 4px 10px; border-radius: 6px; background: rgba(11, 22, 27, 0.85); border: 1px solid var(--line); font-size: 12px; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--cyan);">Cant: 0.0°</div>
+                <div id="trainingHoldTimerBadge" style="position: absolute; top: 12px; right: 12px; padding: 4px 10px; border-radius: 6px; background: rgba(11, 22, 27, 0.85); border: 1px solid var(--line); font-size: 14px; font-weight: 800; font-family: 'JetBrains Mono', monospace; color: var(--cyan);">0.0s</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Results Summary (Overlay/Appended panel) -->
+          <div id="trainingResultsCard" class="panel training-results-card hidden">
+            <div class="panel-head" style="margin-bottom: 12px;">
+              <h3>Session Results</h3>
+            </div>
+            <div class="results-grid" style="display: grid; grid-template-columns: 1fr; gap: 16px; margin-bottom: 16px;">
+              <div class="result-badge-large" style="display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 16px; border-radius: 8px; border: 1px solid rgba(53, 199, 232, 0.25); background: rgba(53, 199, 232, 0.05); text-align: center;">
+                <span class="label" style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); font-weight: 700; margin-bottom: 4px;">Average Steadiness Score</span>
+                <span id="resultSteadinessScore" class="val" style="font-size: 48px; font-weight: 900; color: var(--cyan); line-height: 1;">--</span>
+              </div>
+              <div class="result-stats" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
+                <div class="stat-item" style="display: flex; flex-direction: column; align-items: center; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-soft); text-align: center;">
+                  <span class="label" style="font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 700; margin-bottom: 4px;">Avg Cant Dev</span>
+                  <span id="resultAvgCantDev" class="val" style="font-size: 14px; font-weight: 800; color: var(--text); font-family: 'JetBrains Mono', monospace;">--</span>
+                </div>
+                <div class="stat-item" style="display: flex; flex-direction: column; align-items: center; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-soft); text-align: center;">
+                  <span class="label" style="font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 700; margin-bottom: 4px;">Avg Pitch Dev</span>
+                  <span id="resultAvgPitchDev" class="val" style="font-size: 14px; font-weight: 800; color: var(--text); font-family: 'JetBrains Mono', monospace;">--</span>
+                </div>
+                <div class="stat-item" style="display: flex; flex-direction: column; align-items: center; padding: 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-soft); text-align: center;">
+                  <span class="label" style="font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); font-weight: 700; margin-bottom: 4px;">Max Float Span</span>
+                  <span id="resultMaxFloat" class="val" style="font-size: 14px; font-weight: 800; color: var(--text); font-family: 'JetBrains Mono', monospace;">--</span>
+                </div>
+              </div>
+            </div>
+            <div class="coaching-box" style="padding: 12px; border-radius: 8px; border-left: 3px solid var(--cyan); background: rgba(53, 199, 232, 0.04); margin-bottom: 16px;">
+              <strong id="resultCoachingTitle" style="display: block; font-size: 13px; color: var(--text); margin-bottom: 4px;">--</strong>
+              <p id="resultCoachingText" class="note" style="margin: 0; font-size: 12px; line-height: 1.4;">--</p>
+            </div>
+            <div class="actions" style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 8px;">
+              <button id="saveTrainingShotBtn" class="primary" style="min-height: 38px;">Save holds</button>
+              <button id="discardTrainingShotBtn" class="secondary" style="min-height: 38px;">Dismiss</button>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- 2. Shot History View (Hidden by default) -->
+      <div id="tabHistory" class="tab-view hidden-view">
+        <section class="history-workspace">
+          <div class="panel history-header-panel">
+            <div class="panel-head" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; width: 100%;">
+              <div>
+                <h2>Saved Shots</h2>
+                <p class="note">Review a shot or select several to compare.</p>
+              </div>
+              <div id="historyBulkActions" class="bulk-actions-bar hidden" style="display: flex; align-items: center; gap: 8px;">
+                <button id="bulkSelectAllBtn" class="secondary mini-btn" type="button">Select All</button>
+                <span id="bulkSelectCount" class="note" style="margin: 0; font-weight: 600; color: var(--cyan);">0 selected</span>
+                <button id="bulkDeleteBtn" class="danger mini-btn" type="button" title="Delete selected shots">Delete Selected</button>
+                <button id="bulkCancelBtn" class="secondary mini-btn" type="button">Clear selection</button>
+              </div>
+              <div id="historyDefaultActions">
+                <button id="historySelectModeBtn" class="secondary mini-btn" type="button">Select Shots</button>
+              </div>
+            </div>
+          </div>
+          <div class="panel" style="padding:16px">
+            <div class="history-analysis-toolbar">
+              <button id="offlineCompareBtn" type="button" class="secondary">Compare selected (0)</button>
+              <button id="offlineAnalyzeBtn" type="button" class="secondary">Analyze selected</button>
+              <details class="history-tools"><summary>Analysis settings & grouping</summary>
+                <div class="history-settings-grid">
+                  <label>Distance (m)<input id="offlineDistance" type="number" min="1" max="1000" step="0.1" value="18"></label>
+                  <label>Target size (cm)<input id="offlineFace" type="number" min="1" max="1000" step="0.1" value="40"></label>
+                  <label>Group name<input id="offlineSeriesName" type="text" maxlength="120" placeholder="Practice group"></label>
+                  <button id="offlineGroupBtn" type="button" class="secondary">Group selected</button>
+                  <button id="offlineSuggestBtn" type="button" class="secondary">Use suggested series</button>
+                </div>
+                <p class="note">Apply new settings with Analyze. Check suggested groups before comparing.</p>
+              </details>
+            </div>
+            <p id="offlineStatus" class="note" role="status" aria-live="polite">Use Analyze group to score your saved shots.</p>
+          </div>
+          <section id="offlineComparisonPanel" class="panel offline-comparison-panel" hidden></section>
+          <div class="history-list-wrapper">
+            <div id="historyList" class="history-list">
+              <p class="note" style="padding: 24px; text-align: center;">No saved shots yet.</p>
+            </div>
+          </div>
+        </section>
+      </div>
+
+
+
+
+      <!-- 4. Sensor Settings View (Hidden by default) -->
+      <div id="tabSettings" class="tab-view hidden-view">
+        <nav class="settings-navigation" aria-label="Settings sections">
+          <button id="navSettingsGeneralBtn" class="settings-tab active" type="button" aria-pressed="true">General</button>
+          <button id="navCalibrationBtn" class="settings-tab" type="button" aria-pressed="false">Calibration</button>
+          <button id="navBowShopBtn" class="settings-tab">
+          Bow Setup
+        </button>
+<button id="navGuideBtn" class="settings-tab">
+          Guide
+        </button>
+        </nav>
+        <div id="tabSettingsGeneral" class="settings-view active-view">
+        <section class="settings-workspace">
+          <!-- Card C: Sensor Power Settings (full width, top) -->
+          <div class="panel settings-card settings-card-wide">
+            <h3>Power Management</h3>
+            <div class="settings-field-grid">
+              <div class="field">
+                <label for="wakeSlider">Wake-up Sensitivity - <span id="wakeValue">2.0</span> g</label>
+                <input type="range" id="wakeSlider" min="0.5" max="8.0" step="0.1" value="2.0">
+                <p class="note">Acceleration threshold needed to wake the chip from deep sleep.</p>
+              </div>
+              <div class="field">
+                <label for="sleepTimeoutSlider">Sleep Timeout - <span id="sleepTimeoutValue">300</span> s</label>
+                <input type="range" id="sleepTimeoutSlider" min="5" max="600" step="5" value="300">
+                <p class="note">Idle duration before sleep when disconnected.</p>
+              </div>
+              <div class="field">
+                <label for="sleepSensSlider">Sleep Sensitivity - <span id="sleepSensValue">0.15</span> g</label>
+                <input type="range" id="sleepSensSlider" min="0.05" max="0.50" step="0.01" value="0.15">
+                <p class="note">Movement threshold to keep device awake while idle.</p>
+              </div>
+              <div class="field">
+                <label for="sleepEnableToggle" style="display: inline-flex; align-items: center; cursor: pointer;">
+                  <input type="checkbox" id="sleepEnableToggle" checked style="vertical-align: middle; margin-right: 8px;">
+                  Enable Device Auto-Sleep
+                </label>
+                <p class="note">If disabled, the device remains awake indefinitely until powered off.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card B: Telemetry & Buffer Settings (full width) -->
+          <div class="panel settings-card settings-card-wide">
+            <h3>Telemetry &amp; Buffer</h3>
+            <div class="settings-field-grid">
+              <div class="field">
+                <label for="thresholdSlider">Release Threshold - <span id="thresholdValue">12.0</span> g</label>
+                <input type="range" id="thresholdSlider" min="2" max="30" step="0.5" value="12">
+                <p class="note">Impulse threshold for bow release detection, set in BLE firmware.</p>
+              </div>
+              <div class="field">
+                <label for="followThroughSlider">Follow-Through - <span id="followThroughValueMs">1.5</span> s</label>
+                <input type="range" id="followThroughSlider" min="0" max="3000" step="100" value="1500">
+                <p class="note">Post-release recording delay before freezing trace.</p>
+              </div>
+              <div class="field">
+                <label for="bufferRateSlider">Trace Buffer Rate - <span id="bufferRateValue">Device 52 Hz / Web 208 Hz</span></label>
+                <input type="range" id="bufferRateSlider" min="0" max="3" step="1" value="1">
+                <p class="note">Off disables trace capture. Any enabled value keeps offline sessions at 52 Hz so the sensor retains 80 complete shots; the browser still uses the higher local rate shown above.</p>
+              </div>
+              <div class="field">
+                <label for="streamRateSlider">Live Stream Rate - <span id="streamRateValue">1110 Hz (Max)</span></label>
+                <input type="range" id="streamRateSlider" min="0" max="4" step="1" value="4">
+                <p class="note">Telemetry frame transmission rate over BLE.</p>
+              </div>
+              <div class="field">
+                <label for="bufferNVSToggle" style="display: inline-flex; align-items: center; cursor: pointer;">
+                  <input type="checkbox" id="bufferNVSToggle" checked style="vertical-align: middle; margin-right: 8px;">
+                  Persist Traces Offline (RRAM)
+                </label>
+                <p class="note">Saves traces to non-volatile flash so they survive deep sleep power down.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Card Alignment: Sensor Mount + 3D Model Display (combined) -->
+
+
+          <!-- Card Bow Profiles: Bow Profile Manager -->
+          <div class="panel settings-card">
+            <h3>Bow Profile Manager</h3>
+            <div class="field" style="margin-top: 10px;">
+              <label for="bowProfileSelect">Select Profile</label>
+              <select id="bowProfileSelect">
+                <option value="">Default Bow</option>
+              </select>
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="bowModelInput">Bow Name / Model</label>
+              <input type="text" id="bowModelInput" placeholder="e.g. Hoyt Formula Xi" value="">
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="drawWeightInput">Draw Weight (lbs)</label>
+              <input type="number" id="drawWeightInput" min="10" max="90" step="0.5" placeholder="e.g. 42" value="">
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="bowSpeedInput">Estimated Arrow Speed (fps)</label>
+              <input type="number" id="bowSpeedInput" min="100" max="450" step="1" placeholder="e.g. 280" value="">
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="stabilizerSetupInput">Stabilizer Setup</label>
+              <input type="text" id="stabilizerSetupInput" placeholder="e.g. 30in Front / 12in Side" value="">
+            </div>
+            <div class="field" style="margin-top: 10px;">
+              <label for="bowNotesInput">Notes</label>
+              <textarea id="bowNotesInput" placeholder="e.g. tiller height, brace height..." style="resize: vertical; min-height: 50px;"></textarea>
+            </div>
+            <div class="settings-actions-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;">
+              <button id="saveBowProfileBtn" class="primary">Save Profile</button>
+              <button id="deleteBowProfileBtn" class="danger">Delete</button>
+            </div>
+            <div style="margin-top: 8px;">
+              <button id="newBowProfileBtn" class="accent" style="width: 100%;">Create New Profile</button>
+            </div>
+          </div>
+
+          <!-- Card Data: Local Backup & Restore -->
+          <div class="panel settings-card">
+            <h3>Data Backup &amp; Restore</h3>
+            <p class="note" style="margin-top: 10px;">
+              Export every locally stored shot, trace, session, and bow profile to a single JSON file, or import one back. Fully local &mdash; no account needed. Useful for moving field-test data between devices or keeping a backup.
+            </p>
+            <div class="settings-actions-group" style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px;">
+              <button id="exportDataBtn" class="primary">Export Data</button>
+              <button id="importDataBtn" class="accent">Import Data</button>
+            </div>
+            <p id="dataBackupStatus" class="note" style="margin-top: 8px; min-height: 14px;"></p>
+            <input type="file" id="importDataInput" accept="application/json,.json" hidden>
+          </div>
+
+          <!-- Card: Demo / Sample Data -->
+          <div class="panel settings-card" id="sampleDataCard" hidden>
+            <h3>Demo Shots</h3>
+            <p class="note" style="margin-top: 10px;">
+              Sample shots load automatically the first time you open the app so you can explore the dashboard, history, and shot review without a device. They are labeled &ldquo;Sample shot&rdquo; and never sync to the cloud. Remove them whenever you like &mdash; your own shots are not affected.
+            </p>
+            <div class="settings-actions-group" style="margin-top: 12px;">
+              <button id="clearSamplesBtn" class="accent">Remove demo shots</button>
+            </div>
+            <p id="sampleDataStatus" class="note" style="margin-top: 8px; min-height: 14px;"></p>
+          </div>
+
+          <!-- Card D: Diagnostics & Live Terminal -->
+          <div class="panel settings-card diagnostics-panel">
+            <h3>Diagnostics &amp; Log</h3>
+            <div class="diagnostics-grid" style="display: grid; gap: 12px; margin-top: 10px;">
+              <div class="panel readouts-sub">
+                <table>
+                  <tbody>
+                    <tr><td>Protocol</td><td id="protocolValue">--</td></tr>
+                    <tr><td>Frame Type</td><td id="typeValue">--</td></tr>
+                    <tr><td>Source</td><td id="sourceValue">--</td></tr>
+                    <tr><td>Last Seq</td><td id="seqValue">--</td></tr>
+                    <tr><td>Packet Loss</td><td id="lossValue">0</td></tr>
+                    <tr><td>Last dt_us</td><td id="dtValue">--</td></tr>
+                    <tr><td>Valid Frames</td><td id="frameCountValue">0</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="panel log-container" style="display: flex; flex-direction: column;">
+                <div id="eventLog" class="log" style="flex: 1; height: 160px; max-height: 160px;"></div>
+              </div>
+            </div>
+          </div>
+          <div class="panel settings-card settings-card-wide" id="demoSettingsCard">
+            <h3>Demo</h3>
+            <p class="note">Start a synthetic live stream without a sensor, then open Dashboard or Steady Aim to explore. Return here to stop the demo.</p>
+            <div class="settings-actions-group"><button id="demoBtn" class="status clickable demo-btn" type="button"
+                title="Watch a synthetic live stream — no hardware needed">
+          <span aria-hidden="true">▶</span>
+          <span id="demoBtnText">Demo</span>
+        </button></div>
+          </div>
+        </section>
+      </div>
+        <div id="tabCalibration" class="settings-view hidden-view">
+          <section class="settings-workspace">
+          <div class="visualizer-row calibration-preview settings-card-wide">
+            <section class="orientation-visualizer panel" aria-label="Live bow orientation visualizer">
+              <div class="orientation-copy">
+                <span class="eyebrow">Live orientation</span>
+                <h2>Bow Orientation</h2>
+              </div>
+              <div class="orientation-readouts">
+                <span>Cal Roll <strong id="calibrationOrientationRollValue">0.0</strong> deg</span>
+                <span>Cal Pitch <strong id="calibrationOrientationPitchValue">0.0</strong> deg</span>
+                <span>Yaw <strong id="calibrationOrientationYawValue">0.0</strong> deg</span>
+              </div>
+
+              <canvas id="calibrationOrientationCanvas"></canvas>
+            </section>
+
+            <div class="panel level-card" id="calibrationLevelCard">
+              <div class="level-head">
+                <span>Bow Cant</span>
+                <strong><span id="calibrationCantValue">0.0</span><small> deg</small></strong>
+              </div>
+              <div class="bubble-level" aria-label="Live bow cant bubble level">
+                <div class="level-tick level-tick-left"></div>
+                <div class="level-center-band"></div>
+                <div class="level-tick level-tick-right"></div>
+                <div id="calibrationLevelBubble" class="level-bubble"></div>
+              </div>
+              <small id="calibrationLevelAlertText" class="level-alert">Level</small>
+
+            </div>
+          </div>
+
+            <div class="panel settings-card calibration-level-card">
+              <h3>Level &amp; heading calibration</h3>
+              <p class="note">Keep the bow level and still to set its zero. Watch the live preview above while adjusting calibration.</p>
+              <div class="orientation-cal-offsets" aria-label="Stored zero calibration offsets">
+                <span class="cal-offsets-label">Zero Offsets</span>
+                <span>R <strong id="calOffsetRollValue">0.0</strong></span>
+                <span>P <strong id="calOffsetPitchValue">0.0</strong></span>
+                <span>Y <strong id="calOffsetYawValue">0.0</strong></span>
+              </div><div class="level-controls">
+                <button id="toggleLevelTuneBtn" class="mini-btn secondary-btn" style="margin-bottom: 8px; width: 100%;">Tune Bubble Settings</button>
+
+                <div id="levelTuneSection" class="level-tune-section hidden" style="margin-bottom: 12px; display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: 200px;">
+                  <div class="tune-field">
+                    <div class="tune-label-row" style="display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 2px;">
+                      <label for="levelRangeSlider" style="cursor: pointer;">Level Range (Scale)</label>
+                      <span><strong id="levelRangeValue" style="color: var(--text);">12</strong>°</span>
+                    </div>
+                    <input type="range" id="levelRangeSlider" min="5" max="30" step="1" value="12" style="width: 100%; cursor: pointer;">
+                  </div>
+                  <div class="tune-field">
+                    <div class="tune-label-row" style="display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-bottom: 2px;">
+                      <label for="levelToleranceSlider" style="cursor: pointer;">Sweet Spot (Tolerance)</label>
+                      <span><strong id="levelToleranceValue" style="color: var(--text);">2.0</strong>°</span>
+                    </div>
+                    <input type="range" id="levelToleranceSlider" min="0.5" max="5.0" step="0.5" value="2.0" style="width: 100%; cursor: pointer;">
+                  </div>
+                </div>
+
+                <button id="zeroBtn" class="accent" disabled>Zero Calibration</button>
+                <div class="level-yaw-row">
+                  <button id="zeroYawBtn" class="mini-btn" disabled>Calibrate Yaw</button>
+                  <label for="modelIgnoreYawToggle" class="toggle-label" title="Ignore model yaw during display. Yaw may drift over time.">
+                    <input type="checkbox" id="modelIgnoreYawToggle">
+                    Ignore Yaw <span class="drift-warning" title="Yaw angles calculated from sensor gyros naturally accumulate error and drift over time.">(may drift)</span>
+                  </label>
+                </div>
+              </div>
+            </div>
+            <div class="panel settings-card">
+            <h3>Relative pin tracking</h3>
+            <p class="note">After installing and checking the bow mounting profile: cant must follow a side lean, pitch an up/down aim, and yaw a left/right aim. Capture the center while holding still. This estimates aiming direction, not arrow impact.</p>
+            <p class="note">If the pin drifts with the bow resting on a stationary support, calibrate the gyroscope first. Leave it untouched until completion: 1 second to settle, then 8 seconds of measurement.</p>
+            <button id="gyroCalibrateBtn" type="button" disabled>Calibrate gyroscope — keep still</button>
+            <p class="note" id="gyroCalibrationStatus">Connect the sensor to calibrate its gyroscope.</p>
+            <label class="toggle-label">
+              <input type="checkbox" id="aimAxesVerified">
+              I checked the firmware axes for this connection (X forward, Z up)
+            </label>
+            <div class="mount-wizard-actions">
+              <label class="toggle-label">
+                <input type="checkbox" id="aimReverseHorizontal">
+                Reverse horizontal
+              </label>
+              <label class="toggle-label">
+                <input type="checkbox" id="aimReverseVertical">
+                Reverse vertical
+              </label>
+            </div>
+            <p class="note">If aiming right moves the dot left, toggle Reverse horizontal. If aiming up moves it down, toggle Reverse vertical. After a change, capture the center again. These choices are saved for this browser; saved traces keep their recorded directions.</p>
+            <div class="mount-wizard-actions">
+              <button id="captureAimBtn" type="button" class="accent" disabled>Pin at center — capture</button>
+              <button id="clearAimBtn" type="button" disabled>Clear aiming reference</button>
+              <button id="aimExitReviewBtn" type="button" hidden>Exit Review — return to live</button>
+            </div>
+            <p class="note" id="aimStatus">Connect a sensor and check its axes before capturing the aiming center.</p>
+            <p class="note">After reconnecting, capture the center again before tracking. Direction preferences are kept; the previous aiming center is not reused.</p>
+          </div><div class="panel settings-card alignment-card">
+            <h3>Sensor &amp; 3D Alignment</h3>
+            <div class="alignment-body">
+              <p class="note alignment-intro">
+                Drag the preview to orbit. Two independent things live here:
+                <strong class="ink-sensor">where the sensor sits</strong> (changes the
+                data the firmware reports) and
+                <strong class="ink-model">how the 3D bow looks</strong> (display only).
+                With a sensor connected the preview moves live &mdash; tilt your bow
+                and check the model follows.
+              </p>
+
+              <!-- Shared 3D preview for both sections -->
+              <canvas id="mountOrientationCanvas" aria-label="Bow and XIAO module 3D alignment preview"></canvas>
+
+              <!-- Live wiggle-test readouts under the preview -->
+              <div class="alignment-live-strip" aria-label="Live sensor check">
+                <span class="alignment-live-label">Live check</span>
+                <span>Cant <strong id="mountLiveCantValue">--</strong> deg</span>
+                <span>Pitch <strong id="mountLivePitchValue">--</strong> deg</span>
+                <small>Tilt the top of the bow toward your sight: cant should go positive
+                and the 3D bow should lean the same way. If it mirrors or tips instead,
+                fix the sensor mount below; if only the picture is wrong, fix the 3D model.</small>
+              </div>
+
+              <!-- 1. Sensor Mount (changes the data) -->
+              <details class="alignment-section alignment-sensor" open>
+                <summary class="alignment-head">
+                  <span class="alignment-step">1</span>
+                  <div class="alignment-head-text">
+                    <h4>Sensor Mount <span class="alignment-tag tag-visual">preview / diagnostics</span></h4>
+                  </div>
+                  <span class="alignment-chevron" aria-hidden="true"></span>
+                </summary>
+                <div class="alignment-section-body">
+                <p class="note">Preview how the sensor board sits on your riser, or capture diagnostic axes with Guided Setup. These controls do not change live cant, pitch, or yaw. The installed firmware determines the data axes.</p>
+
+                <div class="field">
+                  <label for="mountOrientationSelect">Sensor board position</label>
+                  <select id="mountOrientationSelect">
+                    <option value="firmware-x-90" selected>Current firmware mount</option>
+                    <option value="firmware-x-90-flipped">Current mount, inverted sign</option>
+                    <option value="face-out-usb-up">Face out, USB up</option>
+                    <option value="face-out-usb-down">Face out, USB down</option>
+                    <option value="face-out-usb-left">Face out, USB left</option>
+                    <option value="face-out-usb-right">Face out, USB right</option>
+                    <option value="custom">Custom rotated mount</option>
+                  </select>
+                  <p id="mountOrientationDescription" class="note">Preview the selected board mounting direction before updating firmware axis mapping.</p>
+                </div>
+
+                <p class="note alignment-warning">&#9888; Picking a position here only previews the mapping. The sensor itself keeps reporting with the mapping compiled into its firmware &mdash; rebuild and flash the firmware with the matching mount mapping to change the data.</p>
+
+                <div class="alignment-wizard">
+                  <div class="alignment-sub-label">Guided setup &mdash; let the sensor find the mount</div>
+                  <p class="note" id="mountWizardText">With the sensor connected and streaming, two quick captures detect the board position automatically &mdash; no axis-thinking required. Detection is relative to the data the sensor currently streams.</p>
+                  <div class="mount-wizard-actions">
+                    <button id="mountWizardPrimaryBtn" type="button" class="accent">Start Guided Setup</button>
+                    <button id="mountWizardCancelBtn" type="button" class="hidden">Cancel</button>
+                  </div>
+                </div>
+
+                <div class="alignment-sub-label">Nudge the mount in 90&deg; steps</div>
+                <div class="mount-rotate-controls" aria-label="Rotate IMU module in 90 degree steps">
+                  <button id="mountRotateXBtn" type="button" title="Rotate the board 90 degrees around the bow's forward axis (the cant direction)">Roll &#8635;<small class="rotate-axis-hint">forward axis</small></button>
+                  <button id="mountRotateYBtn" type="button" title="Rotate the board 90 degrees around the bow's vertical axis (spin it flat)">Spin &#8635;<small class="rotate-axis-hint">vertical axis</small></button>
+                  <button id="mountRotateZBtn" type="button" title="Rotate the board 90 degrees around the bow's side axis (tip it forward/back)">Tip &#8635;<small class="rotate-axis-hint">side axis</small></button>
+                  <button id="mountResetBtn" type="button" title="Return to the selected preset position">Reset<small class="rotate-axis-hint">back to preset</small></button>
+                </div>
+
+                <details class="alignment-dev-details">
+                  <summary>Developer details &mdash; preview / diagnostic axes</summary>
+                  <div class="mount-axis-grid" aria-label="Preview or diagnostic axis mapping">
+                    <span>Bow X <strong id="mountAxisXValue">IMU X</strong></span>
+                    <span>Bow Y <strong id="mountAxisYValue">-IMU Z</strong></span>
+                    <span>Bow Z <strong id="mountAxisZValue">IMU Y</strong></span>
+                  </div>
+                  <p id="mountFirmwareNote" class="note">
+                    Diagnostic axes are relative to the current stream, not raw IMU axes. See the firmware build guide before changing the device mapping.
+                  </p>
+                </details>
+                </div>
+              </details>
+
+              <!-- 2. 3D Model Display (visual only) -->
+              <details class="alignment-section alignment-model" open>
+                <summary class="alignment-head">
+                  <span class="alignment-step">2</span>
+                  <div class="alignment-head-text">
+                    <h4>3D Model Display <span class="alignment-tag tag-visual">display only</span></h4>
+                  </div>
+                  <span class="alignment-chevron" aria-hidden="true"></span>
+                </summary>
+                <div class="alignment-section-body">
+                <p class="note">Adjust only the on-screen bow model. Use this when the sensor data is right but the model leans, rolls, or pitches the wrong way. This never changes saved data.</p>
+
+                <div class="alignment-sub-label">Rotate the model in 90&deg; steps</div>
+                <div class="model-rotate-controls" aria-label="Rotate Blender bow model in 90 degree steps">
+                  <button id="modelRotateXBtn" type="button" title="Rotate the 3D bow 90 degrees around its roll axis">Roll &#8635;<small class="rotate-axis-hint">model X</small></button>
+                  <button id="modelRotateYBtn" type="button" title="Rotate the 3D bow 90 degrees around its vertical axis">Spin &#8635;<small class="rotate-axis-hint">model Y</small></button>
+                  <button id="modelRotateZBtn" type="button" title="Rotate the 3D bow 90 degrees around its pitch axis">Tip &#8635;<small class="rotate-axis-hint">model Z</small></button>
+                  <button id="modelResetBtn" type="button" title="Clear all model rotation">Reset<small class="rotate-axis-hint">clear rotation</small></button>
+                </div>
+                <div class="model-toggle-grid">
+                  <label for="modelInvertRollToggle">
+                    <input type="checkbox" id="modelInvertRollToggle">
+                    Invert live cant / roll
+                  </label>
+                  <label for="modelInvertPitchToggle">
+                    <input type="checkbox" id="modelInvertPitchToggle">
+                    Invert live pitch
+                  </label>
+                  <label for="modelSwapRollPitchToggle">
+                    <input type="checkbox" id="modelSwapRollPitchToggle">
+                    Swap live cant / pitch
+                  </label>
+                </div>
+                <div class="alignment-sub-label">Current model rotation</div>
+                <div class="model-axis-grid" aria-label="Blender model alignment">
+                  <span>Model X <strong id="modelAxisXValue">0 deg</strong></span>
+                  <span>Model Y <strong id="modelAxisYValue">0 deg</strong></span>
+                  <span>Model Z <strong id="modelAxisZValue">0 deg</strong></span>
+                </div>
+                </div>
+              </details>
+
+              <!-- 3. Preview camera & module placement (view only, never data) -->
+              <details class="alignment-section alignment-view">
+                <summary class="alignment-head">
+                  <span class="alignment-step">3</span>
+                  <div class="alignment-head-text">
+                    <h4>Preview Camera &amp; Board Position <span class="alignment-tag tag-view">preview only</span></h4>
+                  </div>
+                  <span class="alignment-chevron" aria-hidden="true"></span>
+                </summary>
+                <div class="alignment-section-body">
+                <p class="note">These only move the 3D view above &mdash; tilt the camera or slide the little board to where it sits on your riser. They never change data or firmware.</p>
+                <div class="mount-view-controls">
+                  <div class="field">
+                    <label for="mountViewRollSlider">View roll - <span id="mountViewRollValue">0</span> deg</label>
+                    <input type="range" id="mountViewRollSlider" min="-180" max="180" step="1" value="0">
+                  </div>
+                </div>
+                <div class="mount-position-controls" aria-label="Move XIAO module preview along bow axes">
+                  <div class="field">
+                    <label for="mountPositionXSlider">Board position X - <span id="mountPositionXValue">0.00</span></label>
+                    <input type="range" id="mountPositionXSlider" min="-0.8" max="0.8" step="0.01" value="0">
+                  </div>
+                  <div class="field">
+                    <label for="mountPositionYSlider">Board position Y - <span id="mountPositionYValue">0.00</span></label>
+                    <input type="range" id="mountPositionYSlider" min="-1.2" max="1.2" step="0.01" value="0">
+                  </div>
+                  <div class="field">
+                    <label for="mountPositionZSlider">Board position Z - <span id="mountPositionZValue">0.00</span></label>
+                    <input type="range" id="mountPositionZSlider" min="-0.8" max="0.8" step="0.01" value="0">
+                  </div>
+                </div>
+                </div>
+              </details>
+            </div>
+          </div>
+          </section>
+        </div>
+        <div id="tabBowShop" class="settings-view hidden-view">
+        <section class="bow-shop-workspace">
+          <div class="panel bow-shop-preview">
+            <div class="panel-head">
+              <div>
+                <h2>Bow Setup</h2>
+                <p class="note">Customize the 3D bow model used across the dashboard and alignment views.</p>
+              </div>
+            </div>
+            <canvas id="bowShopCanvas" aria-label="Customizable 3D bow model preview"></canvas>
+          </div>
+
+          <div class="panel bow-shop-controls">
+            <h3>Bow Materials</h3>
+            <div id="bowMaterialColorList" class="bow-material-color-list" aria-label="Bow material colors"></div>
+            <p class="note">Uses named Blender materials from the compound bow model. Sights and electronics stay separate for future attachment controls.</p>
+          </div>
+        </section>
+      </div><div id="tabGuide" class="settings-view hidden-view">
+        <section class="guide-workspace">
+          <nav id="guideSidebar" class="guide-sidebar panel" aria-label="Guide Navigation"></nav>
+          <article id="guideContent" class="guide-content panel"></article>
+        </section>
+      </div>
+      </div>
+
+
+
+
+    </main>
+  </div>
+
+  <!-- Cloud Settings Modal -->
+  <div id="cloudModal" class="modal-overlay hidden">
+    <div class="modal-content panel">
+      <div class="modal-header">
+        <h3>Cloud Sync Settings</h3>
+        <button id="closeCloudModalBtn" class="close-btn">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="note" style="margin-bottom: 14px;">
+          Connect to your Supabase project to back up your bow profiles, sessions, shots, and telemetry traces.
+        </p>
+        <div class="field" style="margin-bottom: 12px;">
+          <label for="sbUrlInput">Supabase URL</label>
+          <input type="text" id="sbUrlInput" placeholder="https://your-project.supabase.co">
+        </div>
+        <div class="field" style="margin-bottom: 16px;">
+          <label for="sbKeyInput">Supabase Anon Key</label>
+          <input type="password" id="sbKeyInput" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...">
+        </div>
+        <div class="modal-actions">
+          <button id="saveCloudSettingsBtn" class="primary">Connect & Sync</button>
+          <button id="clearCloudSettingsBtn" class="danger">Disconnect Cloud</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Style prototype toggle: cycles paper -> dark -> classic for comparison -->
+  <button id="themeProtoToggle" title="Cycle style prototype theme">THEME: PAPER</button>
+  <style>
+    #themeProtoToggle {
+      position: fixed;
+      right: 14px;
+      bottom: 14px;
+      z-index: 9999;
+      font: 700 11px "JetBrains Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+      letter-spacing: 0.06em;
+      padding: 8px 12px;
+      min-height: 0;
+      border: 1px solid #f4f2ea;
+      border-radius: 0;
+      background: #17241f;
+      color: #f4f2ea;
+      cursor: pointer;
+    }
+  </style>
+  <script>
+    (function () {
+      const btn = document.getElementById("themeProtoToggle");
+      const link = document.getElementById("graphThemeLink");
+      const KEY = "of-theme-proto";
+      const MODES = ["paper", "dark", "classic"];
+      function normalize(value) {
+        if (value === "1") return "paper"; // migrate old on/off values
+        if (value === "0") return "classic";
+        return MODES.includes(value) ? value : "paper";
+      }
+      function apply(mode) {
+        link.disabled = mode === "classic";
+        let themeColor = "#061014";
+        if (mode === "dark") {
+          document.documentElement.setAttribute("data-theme", "dark");
+          themeColor = "#10171a";
+        } else {
+          document.documentElement.removeAttribute("data-theme");
+          if (mode === "paper") {
+            themeColor = "#f9f8f2";
+          }
+        }
+        const meta = document.getElementById("themeMetaColor");
+        if (meta) {
+          meta.setAttribute("content", themeColor);
+        }
+        btn.textContent = `THEME: ${mode.toUpperCase()}`;
+        localStorage.setItem(KEY, mode);
+        window.dispatchEvent(new Event("themechange"));
+      }
+      let mode = normalize(localStorage.getItem(KEY));
+      btn.textContent = `THEME: ${mode.toUpperCase()}`;
+      btn.addEventListener("click", () => {
+        mode = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
+        apply(mode);
+      });
+    })();
+  </script>
+
+  <script type="module" src="app/main.js?v=aim-pipeline-163"></script>
+</body>
+</html>

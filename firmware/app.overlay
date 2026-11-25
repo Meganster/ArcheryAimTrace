@@ -1,0 +1,32 @@
+&pdm_imu_pwr {
+	regulator-always-on;
+};
+
+&imu_power_default_on {
+	output-high;
+};
+
+&lsm6ds3tr_c {
+	vin-supply = <&pdm_imu_pwr>;
+};
+
+&i2c30 {
+	/* LSM6DS3TR-C datasheet table 7: Fast mode, max 400 kHz. */
+	clock-frequency = <400000>;
+};
+
+&pdm20 {
+	/* 14-sample blocks arrive at ~1143/s; default queue-size=4 starves PDM. */
+	queue-size = <48>;
+};
+
+/ {
+	chosen {
+		zephyr,console = &uart20;
+		zephyr,shell-uart = &uart20;
+	};
+
+	zephyr,user {
+		io-channels = <&adc 7>;
+	};
+};

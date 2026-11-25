@@ -1,0 +1,1348 @@
+// TelemetryStore ingests Samples from the bus, derives live metrics, tracks
+// packet loss against the active transport's sequence step, and maintains a
+// rolling trace buffer for the chart. It is the only thing that writes app
+// state into the reactive store.
+
+import { put, get, getAll, generateUUID } from "../core/db.js?v=aim-pipeline-163";
+import { captureAimPoint } from "./aim-projection.js?v=aim-pipeline-163";
+import {
+  buildShotTraceRecord,
+  buildFirmwareTraceRecord,
+  extractMicWindow,
+} from "../protocol/trace.js?v=aim-pipeline-163";
+import {
+  computeFloatScoreFromTrace,
+  computeLiveFloatScore,
+  FLOAT_SCORE_VERSION,
+} from "./score.js?v=aim-pipeline-163";
+
+import { offlineShotFields, shotStoredAt, sameDeviceEvent } from "../core/shot-record.js?v=aim-pipeline-163";
+
+import { withOfflineAnalysis, offlineShotSummary } from './offline-aim.js?v=aim-pipeline-163';
+import { traceForReview } from '../protocol/trace.js?v=aim-pipeline-163';
+
+export const MAX_TRACE_POINTS = 1000;
+
+const ACCEL_TILT_MIN_G = 0.7;
+const ACCEL_TILT_MAX_G = 1.35;
+const ORIENTATION_CORRECTION_TIME_S = 0.45;
+const MAX_ORIENTATION_DT_S = 0.05;
+const BROWSER_SHOT_TRACE_RATES = [0, 208, 416, 832];
+const BROWSER_SHOT_TRACE_SECONDS = 20;
+const BROWSER_SHOT_PRE_MS = 3500;
+const DEFAULT_FOLLOW_THROUGH_MS = 1500;
+const MAX_FOLLOW_THROUGH_MS = 3000;
+const MIC_RING_PRE_MS = 500;
+const MIC_RING_POST_PAD_MS = 500;
+const MIC_RING_CAPACITY = 4000;
+
+function clamp(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+export function coachForScore({ formScore, holdStability, releaseQuality, followThrough, roll }) {
+  if (formScore == null) {
+    return {
+      coachTitle: "Waiting for movement",
+      coachText: "Connect a sensor or run the demo to start reading hold stability.",
+    };
+  }
+
+  if (Math.abs(roll) > 6) {
+    return {
+      coachTitle: "Watch bow cant",
+      coachText: "Level the riser before expansion; cant drift is the biggest score limiter right now.",
+    };
+  }
+  if (holdStability < 65) {
+    return {
+      coachTitle: "Settle the hold",
+      coachText: "Movement is building before the shot. Let the float shrink before you commit.",
+    };
+  }
+  if (releaseQuality === null || followThrough === null) {
+    return {
+      coachTitle: "Steady hold practice",
+      coachText: "Focus on maintaining bubble level consistency and reducing hand drift during the hold.",
+    };
+  }
+  if (releaseQuality < 65) {
+    return {
+      coachTitle: "Soften the break",
+      coachText: "Release motion is sharp. Keep pulling through instead of punching the shot.",
+    };
+  }
+  if (followThrough < 65) {
+    return {
+      coachTitle: "Stay in the shot",
+      coachText: "The bow is moving quickly after release. Hold posture through impact.",
+    };
+  }
+  return {
+    coachTitle: "Strong sequence",
+    coachText: "Hold, release, and follow-through are all tracking cleanly.",
+  };
+}
+
+function wrapAngleDeg(value) {
+  let wrapped = value;
+  while (wrapped > 180) wrapped -= 360;
+  while (wrapped < -180) wrapped += 360;
+  return wrapped;
+}
+
+function blendAngleDeg(current, target, weight) {
+  return wrapAngleDeg(current + wrapAngleDeg(target - current) * weight);
+}
+
+function configuredFollowThroughMs() {
+  try {
+    const settings = JSON.parse(localStorage.getItem("openfloat_settings") || "{}");
+    const value = Number(settings.followThrough);
+    if (Number.isFinite(value)) {
+      return clamp(value, 0, MAX_FOLLOW_THROUGH_MS);
+    }
+  } catch (_) {}
+  return DEFAULT_FOLLOW_THROUGH_MS;
+}
+
+function configuredBrowserShotTraceRateHz() {
+  try {
+    const settings = JSON.parse(localStorage.getItem("openfloat_settings") || "{}");
+    const index = Number(settings.bufferRate);
+    if (Number.isInteger(index) && index >= 0 && index < BROWSER_SHOT_TRACE_RATES.length) {
+      return BROWSER_SHOT_TRACE_RATES[index];
+    }
+  } catch (_) {}
+  return BROWSER_SHOT_TRACE_RATES[1];
+}
+
+function accelTiltDeg(ax, ay, az) {
+  return {
+    roll: Math.atan2(ay, az) * (180 / Math.PI),
+    pitch: Math.atan2(-ax, Math.hypot(ay, az)) * (180 / Math.PI),
+  };
+}
+
+function sequenceDistance(a, b) {
+  const left = Number(a);
+  const right = Number(b);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return Infinity;
+  const diff = Math.abs((left & 0xffff) - (right & 0xffff));
+  return Math.min(diff, 0x10000 - diff);
+}
+
+function angleDistanceDeg(a, b) {
+  return Math.abs(wrapAngleDeg(Number(a) - Number(b)));
+}
+
+function sampleQuaternion(sample) {
+  const qw = Number(sample.qw);
+  const qx = Number(sample.qx);
+  const qy = Number(sample.qy);
+  const qz = Number(sample.qz);
+  if (![qw, qx, qy, qz].every(Number.isFinite)) return null;
+  const mag = Math.hypot(qw, qx, qy, qz);
+  if (!Number.isFinite(mag) || mag <= 0) return null;
+  return {
+    qw: qw / mag,
+    qx: qx / mag,
+    qy: qy / mag,
+    qz: qz / mag,
+  };
+}
+
+function quaternionAngularSpeedDps(previous, current, dtUs) {
+  if (!previous || !current || !(dtUs > 0)) return 0;
+  const dot = Math.abs(
+    previous.qw * current.qw +
+      previous.qx * current.qx +
+      previous.qy * current.qy +
+      previous.qz * current.qz,
+  );
+  const clampedDot = clamp(dot, -1, 1);
+  const angleRad = 2 * Math.acos(clampedDot);
+  return (angleRad * 180) / Math.PI / (dtUs / 1000000);
+}
+
+export class TelemetryStore {
+  constructor(bus, store, persistence = { put, get, getAll }) {
+    this.db = persistence;
+    this.bus = bus;
+    this.store = store;
+    this.trace = [];
+    this.shotTraceBuffer = [];
+    this.micRingBuffer = [];
+    this.history30s = []; // Rolling 30s telemetry buffer for manual captures
+    this.pendingTraces = new Map();
+    this.reset();
+
+    bus.on("sample", (sample) => this.ingest(sample));
+    bus.on("shot", (shot) => this.onShot(shot));
+    bus.on("trace-chunk", (chunk) => this.onTraceChunk(chunk));
+    bus.on("trace-status", (status) => this.onTraceStatus(status));
+    bus.on("trace-transfer-reset", ({ shotId }) => {
+      if (!this.pendingTraces.get(shotId)?.processing) this.pendingTraces.delete(shotId);
+    });
+    // Device-reported lifetime count (e.g. restored from NVS on connect).
+    // Updates the displayed counter only; not logged as a new shot.
+    bus.on("shotcount", (count) => this.store.set({ shotCount: count }));
+    bus.on("gyro-calibration", (gyroCalibration) => {
+      const previous = this.store.get().gyroCalibration;
+      const changing = gyroCalibration.status === 1 || gyroCalibration.status === 5 ||
+        previous?.status === 1 || previous?.status === 5;
+      this.store.set({ gyroCalibration, gyroCalibrationError: null,
+        ...(changing ? { aimReference: null, aim: null } : {}) });
+    });
+    // Device-reported backlog of shots saved before connecting, uploaded on
+    // reconnect. Drives the inline "Uploading" status indicator.
+    bus.on("upload-status", ({ pending }) =>
+      this.store.set({ uploadPending: Math.max(0, pending | 0) }),
+    );
+    bus.on("status", ({ mode, text }) => {
+      if (mode !== "live") {
+        this.connectionShotIds.clear();
+        this.connectionShotRecords.clear();
+        this.connectionShotEvents.clear();
+        this.pendingTraces.clear();
+        this.importBatchId = generateUUID();
+      }
+      store.set({
+        statusMode: mode,
+        statusText: text,
+        connected: mode === "live" || mode === "demo",
+        ...((mode !== "live" && mode !== "demo") ? { aimReference: null, aim: null, aimAxesVerified: false, lastSampleReceivedAt: null, gyroCalibration: null, gyroCalibrationError: null } : {}),
+      });
+    });
+
+    // Per-second frame rate.
+    setInterval(() => {
+      this.store.set({ hz: this.framesThisSecond });
+      this.framesThisSecond = 0;
+    }, 1000);
+  }
+
+  reset() {
+    this.lastSeq = null;
+    this.frameCount = 0;
+    this.lost = 0;
+    this.framesThisSecond = 0;
+    this.orientationReady = false;
+    this.filteredRoll = 0;
+    this.filteredPitch = 0;
+    this.filteredYaw = 0;
+    this.lastQuat = null;
+    this.trace.length = 0;
+    this.shotTraceBuffer.length = 0;
+    this.micRingBuffer.length = 0;
+    this.history30s.length = 0; // Reset history buffer
+    this.elapsedUs = 0;
+    this.lastShotTracePushUs = 0;
+    this.shotTraceRateHz = configuredBrowserShotTraceRateHz();
+    this.shotTraceDtUs =
+      this.shotTraceRateHz > 0 ? Math.round(1000000 / this.shotTraceRateHz) : 0;
+    this.shotTraceCapacity = Math.max(
+      1,
+      Math.round(this.shotTraceRateHz * BROWSER_SHOT_TRACE_SECONDS),
+    );
+    // Sessions are now derived from shot timestamps at display time, not tracked
+    // live. Shots are saved with session_id = null.
+    this.currentSessionId = null;
+
+    // device_shot_id values already saved during the current connection. Used
+    // to dedup the device re-uploading the same shot (watchdog re-send of
+    // shotdump, or a lost ack). Scoped per-connection because the device's
+    // shot_id restarts at 0 after a firmware `shotreset`/reflash, which would
+    // otherwise collide with older shots in IndexedDB and wrongly drop new ones.
+    this.connectionShotIds = new Set();
+    this.connectionShotRecords = new Map();
+    this.connectionShotEvents = new Map();
+    this.importBatchId = generateUUID();
+
+    this.isRecordingManual = false;
+    this.manualRecordingBuffer = [];
+    this.manualRecordingDurationUs = 0;
+    this.manualRecordingLabel = "";
+
+    this.store.set({
+      frameCount: 0,
+      lost: 0,
+      hz: 0,
+      shotCount: 0,
+      roll: 0,
+      pitch: 0,
+      yaw: 0,
+      qw: null,
+      qx: null,
+      qy: null,
+      qz: null,
+      sample: null,
+      lastSampleReceivedAt: null,
+      aimReference: null,
+      aim: null,
+      aimAxesVerified: false,
+      gyroCalibration: null,
+      gyroCalibrationError: null,
+      formScore: null,
+      holdStability: null,
+      releaseQuality: null,
+      followThrough: null,
+      levelConsistency: null,
+      scoreVersion: FLOAT_SCORE_VERSION,
+      lastShotSummary: null,
+      manualRecordingActive: false,
+      manualRecordSamples: 0,
+      manualRecordElapsedSec: 0
+    });
+  }
+
+  ingest(sample) {
+    const sampleDtUs = sample.dtUs || 1000;
+    this.elapsedUs += sampleDtUs;
+
+    if (this.lastSeq !== null) {
+      // Binary sequence is u16 and wraps; text sequence is effectively u32.
+      const mask = sample.source === "binary" ? 0xffff : 0xffffffff;
+      const delta = (sample.sequence - this.lastSeq) & mask;
+      const gap = delta - (sample.sequenceStep || 1);
+      if (gap > 0) this.lost += gap;
+    }
+    this.lastSeq = sample.sequence;
+    this.frameCount += 1;
+    this.framesThisSecond += 1;
+
+    const ax = sample.axMg / 1000;
+    const ay = sample.ayMg / 1000;
+    const az = sample.azMg / 1000;
+    const accelG = Math.hypot(sample.axMg, sample.ayMg, sample.azMg) / 1000;
+
+    const { roll: accelRoll, pitch: accelPitch } = accelTiltDeg(ax, ay, az);
+    let roll;
+    let pitch;
+    let yaw;
+
+    if (sample.rollDeg !== undefined && sample.pitchDeg !== undefined) {
+      roll = sample.rollDeg;
+      pitch = sample.pitchDeg;
+      yaw = sample.yawDeg !== undefined ? sample.yawDeg : this.filteredYaw;
+      this.filteredRoll = roll;
+      this.filteredPitch = pitch;
+      this.filteredYaw = yaw;
+      this.orientationReady = true;
+    } else {
+      // Legacy/custom transport fallback. Current BLE and demo samples provide
+      // rollDeg/pitchDeg derived from the firmware Madgwick quaternion.
+      const accelLooksLikeGravity =
+        accelG >= ACCEL_TILT_MIN_G && accelG <= ACCEL_TILT_MAX_G;
+      const dtS = Math.min(
+        Math.max(sampleDtUs / 1000000, 0),
+        MAX_ORIENTATION_DT_S,
+      );
+
+      if (!this.orientationReady) {
+        this.filteredRoll = accelLooksLikeGravity ? accelRoll : 0;
+        this.filteredPitch = accelLooksLikeGravity ? accelPitch : 0;
+        this.filteredYaw = 0;
+        this.orientationReady = true;
+      } else {
+        const gyroRoll = this.filteredRoll + (sample.gxDps || 0) * dtS;
+        const gyroPitch = this.filteredPitch + (sample.gyDps || 0) * dtS;
+        const gyroYaw = this.filteredYaw + (sample.gzDps || 0) * dtS;
+
+        if (accelLooksLikeGravity) {
+          const correctionWeight =
+            1 - Math.exp(-dtS / ORIENTATION_CORRECTION_TIME_S);
+          this.filteredRoll = blendAngleDeg(
+            gyroRoll,
+            accelRoll,
+            correctionWeight,
+          );
+          this.filteredPitch = blendAngleDeg(
+            gyroPitch,
+            accelPitch,
+            correctionWeight,
+          );
+        } else {
+          this.filteredRoll = wrapAngleDeg(gyroRoll);
+          this.filteredPitch = wrapAngleDeg(gyroPitch);
+        }
+        this.filteredYaw = wrapAngleDeg(gyroYaw);
+      }
+
+      roll = this.filteredRoll;
+      pitch = this.filteredPitch;
+      yaw = this.filteredYaw;
+    }
+
+    const quat = sampleQuaternion(sample);
+    const rawGyroMag = Math.hypot(sample.gxDps || 0, sample.gyDps || 0, sample.gzDps || 0);
+    const quatRateDps =
+      quat && sample.gyroAvailable === false
+        ? quaternionAngularSpeedDps(this.lastQuat, quat, sampleDtUs)
+        : 0;
+    const gyroMag = sample.gyroAvailable === false ? quatRateDps : rawGyroMag;
+    this.lastQuat = quat || null;
+    const aim = captureAimPoint({ roll, pitch, yaw, ...(quat || {}) }, this.store.get().aimReference);
+
+    const tracePoint = {
+      aim,
+      ax,
+      ay,
+      az,
+      gx: sample.gxDps,
+      gy: sample.gyDps,
+      gz: sample.gzDps,
+      rotDps: gyroMag,
+      roll,
+      pitch,
+      yaw,
+      ...(quat || {}),
+      micAmp: sample.micAmp || 0,
+      tUs: this.elapsedUs
+    };
+
+    this.trace.push(tracePoint);
+    
+    // Prune the live trace rolling buffer based on the configured live duration (in seconds).
+    // Instead of shift()-ing one element at a time (O(n) per shift), we find
+    // the first in-range index and batch-splice when the stale head grows large
+    // enough to amortise the array reindex cost.
+    const liveDurationSec = this.store.get().liveTraceDuration ?? 10;
+    const durationUs = liveDurationSec * 1000000;
+    const cutoffUs = this.elapsedUs - durationUs;
+    if (this.trace.length > 0 && this.trace[0].tUs < cutoffUs) {
+      // Binary search for the first index >= cutoffUs
+      let lo = 0, hi = this.trace.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (this.trace[mid].tUs < cutoffUs) lo = mid + 1;
+        else hi = mid;
+      }
+      // Only splice when we have a meaningful batch to remove (amortised O(1))
+      if (lo >= 512 || lo >= this.trace.length * 0.25) {
+        this.trace.splice(0, lo);
+      }
+    }
+
+    const configuredShotTraceRate = configuredBrowserShotTraceRateHz();
+    if (configuredShotTraceRate !== this.shotTraceRateHz) {
+      this.shotTraceRateHz = configuredShotTraceRate;
+      this.shotTraceDtUs =
+        this.shotTraceRateHz > 0 ? Math.round(1000000 / this.shotTraceRateHz) : 0;
+      this.shotTraceCapacity = Math.max(
+        1,
+        Math.round(this.shotTraceRateHz * BROWSER_SHOT_TRACE_SECONDS),
+      );
+      this.shotTraceBuffer.length = 0;
+      this.lastShotTracePushUs = this.elapsedUs;
+    }
+    if (
+      this.shotTraceRateHz > 0 &&
+      (this.shotTraceBuffer.length === 0 ||
+        this.elapsedUs - this.lastShotTracePushUs >= this.shotTraceDtUs)
+    ) {
+      this.shotTraceBuffer.push({
+        ...tracePoint,
+        tUs: this.elapsedUs,
+        sequence: sample.sequence,
+        deviceUptimeUs: sample.uptimeUs,
+      });
+      this.lastShotTracePushUs = this.elapsedUs;
+      if (this.shotTraceBuffer.length > this.shotTraceCapacity) {
+        this.shotTraceBuffer.shift();
+      }
+
+      this.history30s.push({
+        ...tracePoint,
+        lost: this.lost
+      });
+      const historyCapacity = Math.max(1500, this.shotTraceRateHz * 30);
+      if (this.history30s.length > historyCapacity) {
+        this.history30s.shift();
+      }
+    }
+
+    this.micRingBuffer.push({
+      tUs: this.elapsedUs,
+      micAmp: sample.micAmp || 0,
+    });
+    if (this.micRingBuffer.length > MIC_RING_CAPACITY) {
+      this.micRingBuffer.shift();
+    }
+
+    if (this.isRecordingManual) {
+      this.manualRecordingBuffer.push({
+        aim,
+        ax,
+        ay,
+        az,
+        gx: sample.gxDps,
+        gy: sample.gyDps,
+        gz: sample.gzDps,
+        rotDps: gyroMag,
+        roll,
+        pitch,
+        yaw,
+        ...(quat || {}),
+        micAmp: sample.micAmp || 0,
+      });
+      this.manualRecordingDurationUs += (sample.dtUs || 19230);
+      this.store.set({
+        manualRecordSamples: this.manualRecordingBuffer.length,
+        manualRecordElapsedSec: Number((this.manualRecordingDurationUs / 1000000).toFixed(1))
+      });
+    }
+
+    const score = computeLiveFloatScore({ roll, pitch, gyroMag, accelG, trace: this.trace });
+    const coaching = coachForScore({ ...score, roll });
+
+    this.store.set({
+      sample,
+      lastSampleReceivedAt: performance.now(),
+      aim,
+      frameCount: this.frameCount,
+      lost: this.lost,
+      accelG,
+      gyroMag,
+      shotCount:
+        sample.shotCount != null ? sample.shotCount : this.store.get().shotCount,
+      roll,
+      pitch,
+      yaw,
+      qw: quat ? quat.qw : null,
+      qx: quat ? quat.qx : null,
+      qy: quat ? quat.qy : null,
+      qz: quat ? quat.qz : null,
+      ...score,
+      ...coaching,
+    });
+  }
+
+  // Newest shot record with this device_shot_id saved within the dedup
+  // window, or null. The 24 h window bounds how long a re-uploaded shot is
+  // treated as a duplicate, so a same-id shot after a firmware reset on a
+  // later day is still saved as new.
+  async findRecentShotByDeviceId(event) {
+    const DEDUP_WINDOW_MS = 24 * 60 * 60 * 1000;
+    try {
+      const shots = await this.db.getAll("shots");
+      const cutoff = Date.now() - DEDUP_WINDOW_MS;
+      let newest = null;
+      for (const record of shots) {
+        if (!sameDeviceEvent(record, event)) continue;
+        const savedAt = Date.parse(shotStoredAt(record));
+        if (!Number.isFinite(savedAt) || (savedAt < cutoff && !record.device_boot_id)) continue;
+        if (!newest || savedAt > Date.parse(shotStoredAt(newest))) {
+          newest = record;
+        }
+      }
+      return newest;
+    } catch (err) {
+      // Dedup is best-effort; on a DB read failure fall through and save,
+      // matching the pre-dedup behavior.
+      return null;
+    }
+  }
+
+  async onShot(shot) {
+    this.connectionShotEvents.set(shot.shotId, structuredClone(shot));
+    const peakG = Math.hypot(shot.axMg, shot.ayMg, shot.azMg) / 1000;
+    const shotTimeUs = this.elapsedUs;
+    const followThroughMs = configuredFollowThroughMs();
+    const browserTraceRateHz = configuredBrowserShotTraceRateHz();
+    this.store.set({ shotCount: shot.shotCount, lastShot: shot });
+
+    try {
+      // 1. Skip a shot the device re-uploaded within this connection (watchdog
+      //    re-send of shotdump, or a lost ack). Still re-emit shot-saved so the
+      //    device gets acknowledged again and frees the stored slot.
+      if (shot.shotId != null && this.connectionShotIds.has(shot.shotId)) {
+        this.bus.emit(
+          "log",
+          `Shot id ${shot.shotId} already handled this connection; re-acknowledging.`,
+        );
+        this.bus.emit("shot-saved", {
+          shotId: shot.shotId,
+          stored: !!shot.stored,
+          duplicate: true,
+        });
+        return;
+      }
+
+      // 1b. Cross-connection dedup for stored re-uploads. If the live frame
+      //     was saved but the ack never reached the device (or the link
+      //     dropped first), the device re-uploads the shot on the next
+      //     connection, where connectionShotIds is empty. Match on
+      //     device_shot_id against recently saved shots only: shot_id restarts
+      //     after a firmware shotreset/reflash, so old records with the same
+      //     id must not swallow genuinely new shots.
+      if (shot.stored && shot.shotId != null) {
+        const recentMatch = await this.findRecentShotByDeviceId(shot);
+        if (recentMatch) {
+          this.bus.emit(
+            "log",
+            `Stored shot id ${shot.shotId} already saved at ${recentMatch.timestamp}; re-acknowledging.`,
+          );
+          this.connectionShotIds.add(shot.shotId);
+          this.connectionShotRecords.set(shot.shotId, recentMatch.id);
+          this.bus.emit("shot-saved", {
+            shotId: shot.shotId,
+            stored: true,
+            duplicate: true,
+          });
+          return;
+        }
+      }
+
+      this.bus.emit(
+        "log",
+        `Shot #${shot.shotCount} (id ${shot.shotId}) peak ~${peakG.toFixed(1)} g`,
+      );
+
+      // 2. Save Shot Metadata
+      const localShotId = generateUUID();
+      const ax = (shot.axMg || 0) / 1000;
+      const ay = (shot.ayMg || 0) / 1000;
+      const az = (shot.azMg || 1000) / 1000;
+      const computedRoll = Math.atan2(ay, az) * (180 / Math.PI);
+      const computedPitch = Math.atan2(-ax, Math.hypot(ay, az)) * (180 / Math.PI);
+
+      const activeState = this.store.get();
+      const computedYaw = activeState.yaw || 0;
+      const startLost = this.lost;
+      const shotRecord = {
+        id: localShotId,
+        session_id: null,
+        device_id: "OpenFloat-Sensor",
+        device_shot_id: shot.shotId,
+        stored_upload: !!shot.stored,
+        timestamp: new Date().toISOString(),
+        peak_g: peakG,
+        cant_angle_deg: Number((shot.rollDeg !== undefined ? shot.rollDeg : computedRoll).toFixed(1)),
+        pitch_angle_deg: Number((shot.pitchDeg !== undefined ? shot.pitchDeg : computedPitch).toFixed(1)),
+        yaw_angle_deg: Number((shot.yawDeg !== undefined ? shot.yawDeg : computedYaw).toFixed(1)),
+        roll_angle_deg: Number((shot.rollDeg !== undefined ? shot.rollDeg : computedRoll).toFixed(1)),
+        stability_score: Number((100 - Math.min(100, Math.hypot(shot.gxDps || 0, shot.gyDps || 0, shot.gzDps || 0))).toFixed(1)),
+        shot_score: activeState.formScore || 0,
+        hold_stability: activeState.holdStability != null ? activeState.holdStability : null,
+        release_quality: activeState.releaseQuality != null ? activeState.releaseQuality : null,
+        follow_through: activeState.followThrough != null ? activeState.followThrough : null,
+        level_consistency: activeState.levelConsistency != null ? activeState.levelConsistency : null,
+        score_version: activeState.scoreVersion || FLOAT_SCORE_VERSION,
+        packet_loss_count: 0,
+        trace_status: shot.stored ? "downloading" : "capturing",
+        raw_event: structuredClone(shot),
+        ...(shot.stored ? offlineShotFields(shot, new Date().toISOString(), this.importBatchId) : {}),
+      };
+
+      await this.db.put("shots", shotRecord);
+      // Mark handled only after a successful save, so a failed write can still
+      // be retried when the device re-sends the shot.
+      if (shot.shotId != null) {
+        this.connectionShotIds.add(shot.shotId);
+        this.connectionShotRecords.set(shot.shotId, localShotId);
+      }
+      await this.db.put("sync_queue", {
+        table: "shots",
+        action: "CREATE",
+        targetId: localShotId,
+        payload: shotRecord,
+        status: "pending"
+      });
+
+      if (!shot.stored && browserTraceRateHz > 0) {
+        this.scheduleBrowserShotTraceCapture(
+          localShotId,
+          shot.shotId,
+          shotTimeUs,
+          shot,
+          followThroughMs,
+          browserTraceRateHz,
+          startLost,
+        );
+      }
+
+      this.bus.emit(
+        "log",
+        shot.stored
+          ? `Stored shot metadata saved; waiting for firmware trace upload.`
+          : browserTraceRateHz > 0
+            ? `Shot metadata saved; browser ${browserTraceRateHz} Hz trace will freeze after ${(followThroughMs / 1000).toFixed(1)} s.`
+            : `Shot metadata saved; browser trace capture is off.`,
+      );
+      this.store.set({
+        lastShotSummary: {
+          timestamp: shotRecord.timestamp,
+          score: shotRecord.shot_score,
+          peakG: shotRecord.peak_g,
+          cant: shotRecord.cant_angle_deg,
+          pitch: shotRecord.pitch_angle_deg,
+          yaw: shotRecord.yaw_angle_deg,
+        },
+      });
+      this.bus.emit("shot-saved", {
+        shotId: shot.shotId,
+        stored: !!shot.stored,
+        localShotId,
+      });
+
+      // 4. Trigger cloud sync manager if wired
+      if (this.syncAdapter) {
+        this.syncAdapter.triggerSync();
+      }
+    } catch (error) {
+      console.error("Local storage / sync queuing failed for shot:", error);
+      this.bus.emit("log", `Offline save error: ${error.message}`);
+    }
+  }
+
+  async onTraceStatus({ shotId, status }) {
+    if (status !== 0 || shotId == null) return;
+    try {
+      const matchingShots = (await this.db.getAll("shots"))
+        .filter(
+          (shot) =>
+            shot.device_id === "OpenFloat-Sensor" &&
+            shot.device_shot_id === shotId,
+        )
+        .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+      const shot = matchingShots[0];
+      if (!shot) return;
+      if ((await this.db.get("shot_traces", shot.id))?.payload?.length) {
+        this.bus.emit("shot-trace-saved", { localShotId: shot.id, deviceShotId: shotId });
+        return;
+      }
+      const updatedShot = { ...shot, trace_status: "unavailable" };
+      await this.db.put("shots", updatedShot);
+      this.bus.emit("shot-trace-unavailable", {
+        localShotId: updatedShot.id,
+        deviceShotId: shotId,
+      });
+    } catch (error) {
+      console.error("Failed to mark unavailable firmware trace:", error);
+    }
+  }
+
+  resolveShotTimeUs(shot, fallbackUs = this.elapsedUs) {
+    if (!shot || !this.shotTraceBuffer.length) return fallbackUs;
+
+    const uptimeUs = Number(shot.uptimeUs);
+    if (Number.isFinite(uptimeUs)) {
+      let best = null;
+      let bestDiff = Infinity;
+      for (const point of this.shotTraceBuffer) {
+        const pointUptimeUs = Number(point.deviceUptimeUs);
+        if (!Number.isFinite(pointUptimeUs)) continue;
+        const diff = Math.abs(pointUptimeUs - uptimeUs);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = point;
+        }
+      }
+      if (best && bestDiff <= 50000) {
+        return best.tUs;
+      }
+    }
+
+    const shotSequence = Number(shot.shotSequence);
+    if (Number.isFinite(shotSequence) && shotSequence > 0) {
+      let best = null;
+      let bestDiff = Infinity;
+      for (const point of this.shotTraceBuffer) {
+        const diff = sequenceDistance(point.sequence, shotSequence);
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          best = point;
+        }
+      }
+      if (best && bestDiff <= 24) {
+        return best.tUs;
+      }
+    }
+
+    const shotAx = Number(shot.axMg) / 1000;
+    const shotAy = Number(shot.ayMg) / 1000;
+    const shotAz = Number(shot.azMg) / 1000;
+    const hasAccel =
+      Number.isFinite(shotAx) &&
+      Number.isFinite(shotAy) &&
+      Number.isFinite(shotAz) &&
+      Math.hypot(shotAx, shotAy, shotAz) >= 2;
+
+    if (hasAccel) {
+      let best = null;
+      let bestError = Infinity;
+      for (const point of this.shotTraceBuffer) {
+        const accelError =
+          Math.abs((point.ax || 0) - shotAx) +
+          Math.abs((point.ay || 0) - shotAy) +
+          Math.abs((point.az || 0) - shotAz);
+        const rollError = Number.isFinite(Number(shot.rollDeg))
+          ? angleDistanceDeg(point.roll || 0, shot.rollDeg) / 10
+          : 0;
+        const pitchError = Number.isFinite(Number(shot.pitchDeg))
+          ? angleDistanceDeg(point.pitch || 0, shot.pitchDeg) / 10
+          : 0;
+        const error = accelError + rollError + pitchError;
+        if (error < bestError) {
+          bestError = error;
+          best = point;
+        }
+      }
+      if (best && bestError <= 1.5) {
+        return best.tUs;
+      }
+    }
+
+    return fallbackUs;
+  }
+
+  scheduleBrowserShotTraceCapture(localShotId, deviceShotId, shotTimeUs, shot, followThroughMs, sampleRateHz, startLost) {
+    const delayMs = Math.max(0, followThroughMs + 100);
+
+    setTimeout(() => {
+      this.saveBrowserShotTrace(
+        localShotId,
+        deviceShotId,
+        shotTimeUs,
+        shot,
+        sampleRateHz,
+        followThroughMs,
+        startLost,
+      );
+    }, delayMs);
+  }
+
+  buildMicSeriesForShot(shotTimeUs, followThroughMs = configuredFollowThroughMs()) {
+    return extractMicWindow(
+      this.micRingBuffer,
+      shotTimeUs,
+      MIC_RING_PRE_MS,
+      followThroughMs + MIC_RING_POST_PAD_MS,
+    );
+  }
+
+  async saveBrowserShotTrace(
+    localShotId,
+    deviceShotId,
+    shotTimeUs,
+    shot,
+    sampleRateHz,
+    followThroughMs = configuredFollowThroughMs(),
+    startLost = this.lost,
+  ) {
+    const resolvedShotTimeUs = this.resolveShotTimeUs(shot, shotTimeUs);
+    const resolvedFreezeAtUs = resolvedShotTimeUs + followThroughMs * 1000;
+    const startAtUs = resolvedShotTimeUs - BROWSER_SHOT_PRE_MS * 1000;
+    const frozenWithTime = this.shotTraceBuffer
+      .filter((point) => point.tUs >= startAtUs && point.tUs <= resolvedFreezeAtUs);
+    const frozen = frozenWithTime.map(({ tUs, sequence, deviceUptimeUs, ...point }) => ({
+      ...point,
+      tUs: tUs - resolvedShotTimeUs,
+    }));
+
+    if (frozen.length === 0) {
+      this.bus.emit("log", `No browser trace samples available for shot ID ${deviceShotId}.`);
+      return;
+    }
+
+    let micSeries = this.buildMicSeriesForShot(resolvedShotTimeUs, followThroughMs);
+    if (micSeries.length === 0 && frozenWithTime.length > 0) {
+      micSeries = frozenWithTime.map((point) => ({
+        tUs: point.tUs - resolvedShotTimeUs,
+        micAmp: point.micAmp || 0,
+      }));
+    }
+    const tracePayload = buildShotTraceRecord({
+      localShotId,
+      sampleRateHz,
+      payload: frozen,
+      micSeries,
+      source: "browser",
+    });
+
+    try {
+      const releaseIndex = frozenWithTime.findIndex((point) => point.tUs >= resolvedShotTimeUs);
+      const traceScore = computeFloatScoreFromTrace(frozen, {
+        sampleRateHz,
+        releaseIndex: releaseIndex >= 0 ? releaseIndex : undefined,
+      });
+      const shotRecord = await this.db.get("shots", localShotId);
+      if (shotRecord) {
+        const shotLoss = Math.max(0, this.lost - startLost);
+        const updatedShot = {
+          ...shotRecord,
+          shot_score: traceScore.formScore,
+          hold_stability: traceScore.holdStability,
+          release_quality: traceScore.releaseQuality,
+          follow_through: traceScore.followThrough,
+          level_consistency: traceScore.levelConsistency,
+          score_version: traceScore.scoreVersion,
+          packet_loss_count: shotLoss,
+          trace_status: "saved",
+        };
+        await this.db.put("shots", updatedShot);
+        await this.db.put("sync_queue", {
+          table: "shots",
+          action: "UPDATE",
+          targetId: localShotId,
+          payload: updatedShot,
+          status: "pending",
+        });
+        this.store.set({
+          formScore: traceScore.formScore,
+          holdStability: traceScore.holdStability,
+          releaseQuality: traceScore.releaseQuality,
+          followThrough: traceScore.followThrough,
+          levelConsistency: traceScore.levelConsistency,
+          scoreVersion: traceScore.scoreVersion,
+          lastShotSummary: {
+            timestamp: updatedShot.timestamp,
+            score: updatedShot.shot_score,
+            peakG: updatedShot.peak_g,
+            cant: updatedShot.cant_angle_deg,
+            pitch: updatedShot.pitch_angle_deg,
+            yaw: updatedShot.yaw_angle_deg,
+          },
+        });
+      }
+      await this.db.put("shot_traces", tracePayload);
+      await this.db.put("sync_queue", {
+        table: "shot_traces",
+        action: "CREATE",
+        targetId: localShotId,
+        payload: tracePayload,
+        status: "pending",
+      });
+      this.bus.emit(
+        "log",
+        `Browser trace saved for shot ID ${deviceShotId} (${frozen.length} motion samples, ${(BROWSER_SHOT_PRE_MS / 1000).toFixed(1)} s pre + ${(followThroughMs / 1000).toFixed(1)} s follow @ ${sampleRateHz} Hz` +
+          `${micSeries.length ? `, ${micSeries.length} mic samples` : ""}).`,
+      );
+      this.bus.emit("shot-trace-saved", { localShotId, deviceShotId });
+      if (this.syncAdapter) {
+        this.syncAdapter.triggerSync();
+      }
+    } catch (error) {
+      console.error("Delayed browser trace save failed:", error);
+      this.bus.emit("log", `Browser trace save error: ${error.message}`);
+    }
+  }
+
+  async saveManual30sCapture() {
+    if (this.history30s.length === 0) {
+      this.bus.emit("log", "No telemetry data recorded yet to save.");
+      return;
+    }
+
+    const hz = this.shotTraceRateHz > 0 ? this.shotTraceRateHz : 52;
+    const durationSec = Math.round(this.history30s.length / hz);
+    this.bus.emit("log", `Saving last ${durationSec}s of live telemetry (${this.history30s.length} samples at ${hz} Hz)...`);
+
+    try {
+      // 1. Compute metrics from the 30s buffer
+      let maxG = 0;
+      let sumStability = 0;
+      
+      const parsedTrace = this.history30s.map((pt, index) => {
+        const g = Math.hypot(pt.ax, pt.ay, pt.az);
+        if (g > maxG) maxG = g;
+        
+        const gyroMag = Math.hypot(pt.gx || 0, pt.gy || 0, pt.gz || 0);
+        const stability = 100 - Math.min(100, gyroMag);
+        sumStability += stability;
+
+        return {
+          ax: pt.ax,
+          ay: pt.ay,
+          az: pt.az,
+          gx: pt.gx || 0,
+          gy: pt.gy || 0,
+          gz: pt.gz || 0,
+          rotDps: pt.rotDps || 0,
+          roll: pt.roll,
+          pitch: pt.pitch,
+          aim: pt.aim,
+          yaw: pt.yaw || 0,
+          ...(sampleQuaternion(pt) || {}),
+          micAmp: pt.micAmp || 0,
+          tUs: Math.round((index * 1000000) / hz),
+        };
+      });
+
+      const avgStability = Number((sumStability / this.history30s.length).toFixed(1));
+      const floatScore = computeFloatScoreFromTrace(parsedTrace, { sampleRateHz: hz, isManual: true });
+
+      // 3. Save shot metadata (representing the manual capture)
+      const startLost = this.history30s[0]?.lost ?? this.lost;
+      const shotLoss = Math.max(0, this.lost - startLost);
+      const manualShotId = generateUUID();
+      const shotRecord = {
+        id: manualShotId,
+        session_id: null,
+        device_id: "OpenFloat-Sensor",
+        timestamp: new Date().toISOString(),
+        peak_g: Number(maxG.toFixed(2)),
+        cant_angle_deg: 0,
+        pitch_angle_deg: 0,
+        yaw_angle_deg: 0,
+        roll_angle_deg: 0,
+        stability_score: avgStability,
+        shot_score: floatScore.formScore,
+        hold_stability: floatScore.holdStability,
+        release_quality: floatScore.releaseQuality,
+        follow_through: floatScore.followThrough,
+        level_consistency: floatScore.levelConsistency,
+        score_version: floatScore.scoreVersion,
+        packet_loss_count: shotLoss
+      };
+
+      await this.db.put("shots", shotRecord);
+      await this.db.put("sync_queue", {
+        table: "shots",
+        action: "CREATE",
+        targetId: manualShotId,
+        payload: shotRecord,
+        status: "pending"
+      });
+
+      // 4. Save trace payload (the full history buffer)
+      const tracePayload = buildShotTraceRecord({
+        localShotId: manualShotId,
+        sampleRateHz: hz,
+        payload: parsedTrace,
+        micSeries: parsedTrace.map((point) => ({
+          tUs: point.tUs,
+          micAmp: point.micAmp || 0,
+        })),
+        source: "browser-manual-30s",
+      });
+
+      await this.db.put("shot_traces", tracePayload);
+      await this.db.put("sync_queue", {
+        table: "shot_traces",
+        action: "CREATE",
+        targetId: manualShotId,
+        payload: tracePayload,
+        status: "pending"
+      });
+
+      this.bus.emit("log", `Manual 30s capture saved successfully (ID: ${manualShotId.slice(0, 8)}).`);
+      this.store.set({
+        lastShotSummary: {
+          timestamp: shotRecord.timestamp,
+          score: shotRecord.shot_score,
+          peakG: shotRecord.peak_g,
+          cant: shotRecord.cant_angle_deg,
+          pitch: shotRecord.pitch_angle_deg,
+          yaw: shotRecord.yaw_angle_deg,
+        },
+      });
+
+      this.bus.emit("shot-saved", {
+        shotId: null,
+        stored: false,
+        localShotId: manualShotId,
+      });
+
+      if (this.syncAdapter) {
+        this.syncAdapter.triggerSync();
+      }
+    } catch (error) {
+      console.error("Failed to save manual capture:", error);
+      this.bus.emit("log", `Manual capture failed: ${error.message}`);
+    }
+  }
+
+  startManualRecording(label) {
+    this.isRecordingManual = true;
+    this.manualRecordingBuffer = [];
+    this.manualRecordingDurationUs = 0;
+    this.manualRecordingLabel = label;
+    this.manualRecordingStartLost = this.lost;
+    
+    this.store.set({
+      manualRecordingActive: true,
+      manualRecordSamples: 0,
+      manualRecordElapsedSec: 0
+    });
+    this.bus.emit("log", `Manual recording started: "${label || 'Untitled'}"`);
+  }
+
+  discardManualRecording() {
+    this.isRecordingManual = false;
+    this.manualRecordingBuffer = [];
+    this.manualRecordingDurationUs = 0;
+    this.manualRecordingLabel = "";
+    
+    this.store.set({
+      manualRecordingActive: false,
+      manualRecordSamples: 0,
+      manualRecordElapsedSec: 0
+    });
+    this.bus.emit("log", "Manual recording discarded.");
+  }
+
+  async saveManualRecording() {
+    if (this.manualRecordingBuffer.length === 0) {
+      this.bus.emit("log", "No telemetry data recorded yet to save.");
+      return null;
+    }
+
+    this.isRecordingManual = false;
+    const durationSec = this.manualRecordingDurationUs / 1000000;
+    const rawSampleRateHz = durationSec > 0 ? this.manualRecordingBuffer.length / durationSec : 52;
+    const step = Math.max(1, Math.round(rawSampleRateHz / 52));
+    const decimatedBuffer = this.manualRecordingBuffer.filter((_, idx) => idx % step === 0);
+    const label = this.manualRecordingLabel.trim() || "Manual Recording";
+
+    this.bus.emit("log", `Saving manual recording: "${label}" (${durationSec.toFixed(1)}s, raw ${this.manualRecordingBuffer.length} samples at ~${Math.round(rawSampleRateHz)}Hz, decimated to ${decimatedBuffer.length} samples at 52Hz)...`);
+
+    try {
+      // 1. Compute metrics
+      let maxG = 0;
+      let sumStability = 0;
+      const parsedTrace = decimatedBuffer.map((pt, index) => {
+        const g = Math.hypot(pt.ax, pt.ay, pt.az);
+        if (g > maxG) maxG = g;
+        
+        const gyroMag = Math.hypot(pt.gx || 0, pt.gy || 0, pt.gz || 0);
+        const stability = 100 - Math.min(100, gyroMag);
+        sumStability += stability;
+
+        return {
+          ax: pt.ax,
+          ay: pt.ay,
+          az: pt.az,
+          gx: pt.gx || 0,
+          gy: pt.gy || 0,
+          gz: pt.gz || 0,
+          rotDps: pt.rotDps || 0,
+          roll: pt.roll,
+          pitch: pt.pitch,
+          aim: pt.aim,
+          yaw: pt.yaw || 0,
+          ...(sampleQuaternion(pt) || {}),
+          micAmp: pt.micAmp || 0,
+          tUs: Math.round((index * 1000000) / 52),
+        };
+      });
+
+      const avgStability = decimatedBuffer.length > 0
+        ? Number((sumStability / decimatedBuffer.length).toFixed(1))
+        : 100;
+      const floatScore = computeFloatScoreFromTrace(parsedTrace, { sampleRateHz: 52, isManual: true });
+
+      // 2. Save shot record
+      const startLost = this.manualRecordingStartLost ?? this.lost;
+      const shotLoss = Math.max(0, this.lost - startLost);
+      const manualShotId = generateUUID();
+      const shotRecord = {
+        id: manualShotId,
+        session_id: null,
+        device_id: "OpenFloat-Sensor",
+        timestamp: new Date().toISOString(),
+        peak_g: Number(maxG.toFixed(2)),
+        cant_angle_deg: 0,
+        pitch_angle_deg: 0,
+        yaw_angle_deg: 0,
+        roll_angle_deg: 0,
+        stability_score: avgStability,
+        shot_score: floatScore.formScore,
+        hold_stability: floatScore.holdStability,
+        release_quality: floatScore.releaseQuality,
+        follow_through: floatScore.followThrough,
+        level_consistency: floatScore.levelConsistency,
+        score_version: floatScore.scoreVersion,
+        packet_loss_count: shotLoss,
+        label: label
+      };
+
+      await this.db.put("shots", shotRecord);
+      await this.db.put("sync_queue", {
+        table: "shots",
+        action: "CREATE",
+        targetId: manualShotId,
+        payload: shotRecord,
+        status: "pending"
+      });
+
+      // 4. Save trace record
+      const tracePayload = buildShotTraceRecord({
+        localShotId: manualShotId,
+        sampleRateHz: 52,
+        payload: parsedTrace,
+        micSeries: parsedTrace.map((point) => ({
+          tUs: point.tUs,
+          micAmp: point.micAmp || 0,
+        })),
+        source: "browser-manual-recording",
+      });
+
+      await this.db.put("shot_traces", tracePayload);
+      await this.db.put("sync_queue", {
+        table: "shot_traces",
+        action: "CREATE",
+        targetId: manualShotId,
+        payload: tracePayload,
+        status: "pending"
+      });
+
+      this.bus.emit("log", `Manual recording saved successfully: "${label}" (ID: ${manualShotId.slice(0, 8)}).`);
+      
+      this.store.set({
+        manualRecordingActive: false,
+        manualRecordSamples: 0,
+        manualRecordElapsedSec: 0,
+        lastShotSummary: {
+          timestamp: shotRecord.timestamp,
+          score: shotRecord.shot_score,
+          peakG: shotRecord.peak_g,
+          cant: shotRecord.cant_angle_deg,
+          pitch: shotRecord.pitch_angle_deg,
+          yaw: shotRecord.yaw_angle_deg,
+        }
+      });
+
+      this.bus.emit("shot-saved", {
+        shotId: null,
+        stored: false,
+        localShotId: manualShotId,
+      });
+
+      this.manualRecordingBuffer = [];
+      this.manualRecordingDurationUs = 0;
+      this.manualRecordingLabel = "";
+
+      if (this.syncAdapter) {
+        this.syncAdapter.triggerSync();
+      }
+
+      return manualShotId;
+    } catch (error) {
+      console.error("Failed to save manual recording:", error);
+      this.bus.emit("log", `Manual recording save failed: ${error.message}`);
+      return null;
+    }
+  }
+
+  getTrace() {
+    return this.trace;
+  }
+
+  async onTraceChunk(chunk) {
+    const validBytes = Array.isArray(chunk.payload) && chunk.payload.length > 0 &&
+      chunk.payload.length <= 19 && chunk.payload.every((n) => Number.isInteger(n) && n >= 0 && n <= 255);
+    if (!Number.isInteger(chunk.shotId) || chunk.shotId < 0 ||
+        !Number.isInteger(chunk.totalChunks) || chunk.totalChunks < 1 || chunk.totalChunks > 255 ||
+        !Number.isInteger(chunk.chunkIndex) || chunk.chunkIndex < 0 || chunk.chunkIndex >= chunk.totalChunks ||
+        !validBytes) {
+      this.bus.emit("log", "Rejected malformed firmware trace chunk; device copy retained.");
+      return;
+    }
+    if (!this.pendingTraces.has(chunk.shotId)) {
+      this.pendingTraces.set(chunk.shotId, {
+        chunks: new Map(), totalChunks: chunk.totalChunks, pointStride: 0, processing: false,
+      });
+    }
+    const pending = this.pendingTraces.get(chunk.shotId);
+    if (pending.processing) return;
+    const previous = pending.chunks.get(chunk.chunkIndex);
+    if (pending.totalChunks !== chunk.totalChunks ||
+        (previous && (previous.length !== chunk.payload.length || previous.some((n, i) => n !== chunk.payload[i]))) ||
+        (pending.pointStride && chunk.pointStride && pending.pointStride !== chunk.pointStride)) {
+      this.pendingTraces.delete(chunk.shotId);
+      this.bus.emit("log", "Conflicting firmware trace chunks; transfer must be retried.");
+      return;
+    }
+    pending.chunks.set(chunk.chunkIndex, [...chunk.payload]);
+    if (chunk.chunkIndex === 0) pending.pointStride = chunk.pointStride || 0;
+    if (pending.chunks.size !== pending.totalChunks) return;
+    pending.processing = true;
+    try {
+      const bytes = [];
+      for (let i = 0; i < pending.totalChunks; i++) bytes.push(...pending.chunks.get(i));
+      const localId = this.connectionShotRecords.get(chunk.shotId);
+      let shotRecord = localId ? await this.db.get("shots", localId) : (await this.db.getAll("shots"))
+        .filter((record) => record.device_id === "OpenFloat-Sensor" && record.device_shot_id === chunk.shotId)
+        .sort((a, b) => Date.parse(shotStoredAt(b)) - Date.parse(shotStoredAt(a)))[0];
+      if (!shotRecord) throw new Error(`No saved event for shot ${chunk.shotId}`);
+      let traceRecord = buildFirmwareTraceRecord({ localShotId: shotRecord.id,
+        rawBytes: new Uint8Array(bytes), bytesPerPoint: pending.pointStride, deviceShotId: chunk.shotId });
+      let existing = await this.db.get("shot_traces", shotRecord.id);
+      const timing = traceRecord.timing;
+      if (timing.version === 3 && timing.bootId) {
+        const matching = (await this.db.getAll("shots")).find((record) =>
+          record.device_id === shotRecord.device_id && record.device_shot_id === chunk.shotId &&
+          record.device_boot_id === timing.bootId && record.device_event_uptime_us === timing.eventUptimeUs);
+        if (matching) {
+          shotRecord = matching;
+          existing = await this.db.get("shot_traces", matching.id);
+        } else if (shotRecord.device_boot_id || existing?.source === "firmware") {
+          // Same counter after reboot/reset is a different event, not a corrupt retry.
+          const event = this.connectionShotEvents.get(chunk.shotId) || shotRecord.raw_event;
+          if (!event) throw new Error("Missing event metadata for new boot identity");
+          shotRecord = { ...shotRecord, id: generateUUID(),
+            ...offlineShotFields(event, new Date().toISOString(), this.importBatchId),
+            device_boot_id: null, device_event_uptime_us: null, trace_status: "downloading",
+            offline_analysis: null, offline_series_id: null, offline_series_name: null };
+          existing = null;
+          await this.db.put("shots", shotRecord);
+          await this.db.put("sync_queue", { table: "shots", action: "CREATE", targetId: shotRecord.id,
+            payload: shotRecord, status: "pending" });
+        }
+        this.connectionShotRecords.set(chunk.shotId, shotRecord.id);
+        traceRecord.shot_id = shotRecord.id;
+      }
+      if (existing?.source !== "firmware" && existing?.payload?.some((point) => point.aim?.version === 1)) {
+        this.bus.emit("log", `Keeping calibrated browser trace for shot ${chunk.shotId}.`);
+        this.bus.emit("shot-trace-saved", { localShotId: shotRecord.id, deviceShotId: chunk.shotId });
+        return;
+      }
+      if (existing?.raw) {
+        if (existing.raw.bytesPerPoint !== traceRecord.raw.bytesPerPoint ||
+            JSON.stringify(existing.raw.bytes) !== JSON.stringify(traceRecord.raw.bytes)) {
+          throw new Error("Downloaded trace differs from the saved original; original retained");
+        }
+        traceRecord = existing; // Preserve any later analysis on an identical retry.
+      } else if (existing?.source === "firmware") {
+        traceRecord.legacy_payload = existing.payload; // Preserve earlier decoding for audit.
+      }
+      if (traceRecord.analysis?.kind !== 'per-shot-relative') {
+        this.bus.emit("log", "Analyzing saved offline angles…");
+        traceRecord = withOfflineAnalysis(traceRecord, this.store.get().offlineAnalysisParameters);
+      }
+      // Persist the trace first. Never release the device's only copy after a
+      // metadata-only save or a failed trace/queue write.
+      await this.db.put("shot_traces", traceRecord);
+      const updatedShot = { ...shotRecord, trace_status: "saved",
+        ...offlineShotSummary(traceRecord.analysis),
+        ...(traceRecord.timing?.version === 3 ? {
+          device_boot_id: traceRecord.timing.bootId,
+          device_event_uptime_us: traceRecord.timing.eventUptimeUs,
+          device_time_source: traceRecord.timing.eventTimeSource,
+
+        } : {}),
+      };
+      await this.db.put("shots", updatedShot);
+      for (const [table, payload] of [["shot_traces", traceRecord], ["shots", updatedShot]]) {
+        await this.db.put("sync_queue", { table, action: "UPDATE", targetId: shotRecord.id, payload, status: "pending" });
+      }
+      this.bus.emit("log", `Offline trace saved in browser: ${traceRecord.payload.length} samples; relative analysis ${traceRecord.analysis.status}. Device queue may now advance.`);
+      this.bus.emit("shot-trace-saved", { localShotId: shotRecord.id, deviceShotId: chunk.shotId });
+      if (this.store.get().reviewMode && this.store.get().reviewShotId === shotRecord.id) {
+        this.store.set({ reviewTrace: traceForReview(traceRecord).payload, reviewMicSeries: traceRecord.mic_series || null,
+          reviewSampleRateHz: traceRecord.sample_rate_hz,
+          reviewDetectorTiming: traceRecord.timing?.version === 3,
+          reviewReleaseIdx: traceRecord.timing?.releaseIndex ?? null,
+          reviewReleaseTimeMs: traceRecord.timing?.releaseIndex != null ? 0 : null,
+        });
+      }
+      this.syncAdapter?.triggerSync();
+    } catch (error) {
+      this.bus.emit("log", `Offline trace import failed: ${error.message}. Device copy retained; retry upload.`);
+    } finally {
+      this.pendingTraces.delete(chunk.shotId);
+    }
+  }
+}

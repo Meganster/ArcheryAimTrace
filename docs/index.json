@@ -1,0 +1,60 @@
+{
+  "tree": [
+    {
+      "type": "folder",
+      "name": "Licenses",
+      "path": "licenses",
+      "children": [
+        {
+          "type": "file",
+          "name": "Third-Party Notices",
+          "id": "licenses/THIRD_PARTY_NOTICES",
+          "path": "docs/licenses/THIRD_PARTY_NOTICES.md"
+        }
+      ]
+    },
+    {
+      "type": "folder",
+      "name": "Reference",
+      "path": "reference",
+      "children": [
+        {
+          "type": "file",
+          "name": "BLE Control Commands",
+          "id": "reference/ble-commands",
+          "path": "docs/reference/ble-commands.md"
+        },
+        {
+          "type": "file",
+          "name": "Offline Motion Score v1",
+          "id": "reference/offline-motion-score",
+          "path": "docs/reference/offline-motion-score.md"
+        },
+        {
+          "type": "file",
+          "name": "Offline trace timing, version 3",
+          "id": "reference/offline-trace-v3",
+          "path": "docs/reference/offline-trace-v3.md"
+        },
+        {
+          "type": "file",
+          "name": "\u041c\u0430\u0441\u0448\u0442\u0430\u0431 \u0442\u0440\u0430\u0435\u043a\u0442\u043e\u0440\u0438\u0438 \u0432 Review",
+          "id": "reference/review-camera",
+          "path": "docs/reference/review-camera.md"
+        }
+      ]
+    },
+    {
+      "type": "file",
+      "name": "Feature Status",
+      "id": "feature-status",
+      "path": "docs/feature-status.md"
+    },
+    {
+      "type": "file",
+      "name": "Quick Start",
+      "id": "quick-start",
+      "path": "docs/quick-start.md"
+    }
+  ]
+}

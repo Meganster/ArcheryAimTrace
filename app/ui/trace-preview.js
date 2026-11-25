@@ -1,0 +1,279 @@
+// Mini Pin Float target previews for shot list cards.
+
+import { drawTargetFace, getTargetViewPreset } from "./target-face.js?v=aim-pipeline-163";
+import { drawAimTrace, hasAimTrace } from "./aim-trace.js?v=aim-pipeline-163";
+const PREVIEW_SCALE_FIT = 0.9;
+const PREVIEW_RING_INSET = 0.43;
+const PREVIEW_CANVAS_PAD = 3;
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+let inkColors = {
+  release: "#FF5D73",
+  break: "#FFBE5C",
+  follow: "rgba(230, 244, 239, 0.5)",
+  hold: "#30E39B",
+};
+
+function refreshInkColors() {
+  inkColors = {
+    release: cssVar("--red") || "#FF5D73",
+    break: cssVar("--amber") || "#FFBE5C",
+    follow: cssVar("--trace-follow") || "rgba(230, 244, 239, 0.5)",
+    hold: cssVar("--green") || "#30E39B",
+  };
+}
+
+function findReleaseIndex(data, thresholdG = 12.0, inferWhenMissing = true) {
+  const detectorIndex = data.findIndex((point) => point.detectorEvent);
+  if (detectorIndex >= 0) return { releaseIdx: detectorIndex, hasRelease: true };
+  if (data.some((point) => point.releaseTimingAvailable === false)) return { releaseIdx: 0, hasRelease: false };
+  let releaseIdx = 0;
+  let maxG = 0;
+  for (let i = 0; i < data.length; i++) {
+    const pt = data[i];
+    const g = Math.hypot(pt.ax || 0, pt.ay || 0, pt.az || 0);
+    if (g > maxG) {
+      maxG = g;
+      releaseIdx = i;
+    }
+  }
+  if (inferWhenMissing && maxG <= thresholdG && data.length >= 20) {
+    return { releaseIdx: Math.round(data.length * 0.62), hasRelease: true };
+  }
+  return { releaseIdx, hasRelease: maxG > thresholdG };
+}
+
+function holdWindow(data, releaseIdx, hasRelease) {
+  if (!data.length) return [];
+  if (!hasRelease) return data;
+  const releaseStart = Math.max(5, releaseIdx - Math.max(6, Math.round(data.length * 0.03)));
+  return data.slice(0, releaseStart);
+}
+
+function reviewTraceCenter(data, releaseIdx, hasRelease, holdData) {
+  if (hasRelease && data[releaseIdx]) {
+    return {
+      roll: data[releaseIdx].roll || 0,
+      pitch: data[releaseIdx].pitch || 0,
+    };
+  }
+  let sumRoll = 0;
+  let sumPitch = 0;
+  let count = 0;
+  for (const pt of holdData) {
+    sumRoll += pt.roll || 0;
+    sumPitch += pt.pitch || 0;
+    count++;
+  }
+  if (count > 0) return { roll: sumRoll / count, pitch: sumPitch / count };
+  return { roll: data[0]?.roll || 0, pitch: data[0]?.pitch || 0 };
+}
+
+function phaseForIndex(index, releaseIdx, hasRelease, length) {
+  if (!hasRelease) return "hold";
+  const releaseStart = Math.max(2, releaseIdx - Math.max(4, Math.round(length * 0.025)));
+  const releaseEnd = Math.min(length - 1, releaseIdx + Math.max(8, Math.round(length * 0.055)));
+  if (index < releaseStart) return "hold";
+  if (index < releaseIdx) return "break";
+  if (index <= releaseEnd) return "release";
+  return "follow";
+}
+
+function phaseColor(phase) {
+  if (phase === "release") return inkColors.release;
+  if (phase === "break") return inkColors.break;
+  if (phase === "follow") return inkColors.follow;
+  return inkColors.hold;
+}
+
+function decimateTrace(trace, maxPoints = 140) {
+  if (!trace || trace.length <= maxPoints) return trace || [];
+  const out = [];
+  const step = (trace.length - 1) / (maxPoints - 1);
+  for (let i = 0; i < maxPoints; i++) {
+    out.push(trace[Math.min(trace.length - 1, Math.round(i * step))]);
+  }
+  return out;
+}
+
+function previewWrap(canvas) {
+  return (
+    canvas.closest(
+      ".history-item-preview-wrap, .recent-shot-preview-wrap, .shot-card-preview-wrap",
+    ) || canvas.parentElement
+  );
+}
+
+function previewSidePx(canvas) {
+  const wrap = previewWrap(canvas);
+  let side = Math.round(wrap?.clientWidth || 0);
+  if (side < 2) {
+    side = Math.round(canvas.clientWidth || 0);
+  }
+  return Math.max(1, side);
+}
+
+function previewLayout(side) {
+  return {
+    side,
+    cx: side / 2,
+    cy: side / 2,
+    maxRadius: Math.max(12, (side - PREVIEW_CANVAS_PAD * 2) * PREVIEW_RING_INSET),
+  };
+}
+
+function prepareCanvas(canvas) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const layoutSide = previewSidePx(canvas);
+  const { side, cx, cy, maxRadius } = previewLayout(layoutSide);
+  const px = Math.round(side * dpr);
+  canvas.width = px;
+  canvas.height = px;
+  canvas.style.width = `${layoutSide}px`;
+  canvas.style.height = `${layoutSide}px`;
+  canvas.style.minHeight = "0";
+  canvas.style.maxWidth = "100%";
+  canvas.style.maxHeight = "100%";
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, side, cx, cy, maxRadius };
+}
+
+const previewResizeObservers = new WeakMap();
+
+export function watchTracePreviewResize(canvas, redraw) {
+  if (previewResizeObservers.has(canvas)) return;
+
+  const target = previewWrap(canvas) || canvas;
+  const observer = new ResizeObserver(() => {
+    requestAnimationFrame(redraw);
+  });
+  observer.observe(target);
+  previewResizeObservers.set(canvas, observer);
+}
+
+function computePreviewMapScale(data, center, maxRadius) {
+  let maxDev = 1.0;
+  for (const pt of data) {
+    const dist = Math.hypot((pt.roll || 0) - center.roll, (pt.pitch || 0) - center.pitch);
+    if (dist > maxDev) maxDev = dist;
+  }
+  let scale = (maxRadius / maxDev) * PREVIEW_SCALE_FIT;
+  let maxPx = 0;
+  for (const pt of data) {
+    const dx = ((pt.roll || 0) - center.roll) * scale;
+    const dy = ((pt.pitch || 0) - center.pitch) * scale;
+    maxPx = Math.max(maxPx, Math.hypot(dx, dy));
+  }
+  const limit = maxRadius * 0.94;
+  if (maxPx > limit) {
+    scale *= limit / maxPx;
+  }
+  return scale;
+}
+
+export function drawEmptyTargetPreview(canvas, options = {}) {
+  if (!canvas) return;
+  const { ctx, side, cx, cy, maxRadius } = prepareCanvas(canvas);
+  ctx.clearRect(0, 0, side, side);
+  drawTargetFace(ctx, {
+    cx,
+    cy,
+    maxRadius,
+    preset: getTargetViewPreset(options.targetViewMode ?? "normalized", options.targetDistanceM ?? 70),
+    showLabel: false,
+  });
+  ctx.strokeStyle = "rgba(142, 166, 160, 0.35)";
+  ctx.lineWidth = 0.75;
+  ctx.beginPath();
+  ctx.moveTo(cx - maxRadius * 0.35, cy);
+  ctx.lineTo(cx + maxRadius * 0.35, cy);
+  ctx.moveTo(cx, cy - maxRadius * 0.35);
+  ctx.lineTo(cx, cy + maxRadius * 0.35);
+  ctx.stroke();
+}
+
+export function drawTraceTargetPreview(canvas, tracePayload, options = {}) {
+  if (!canvas) return false;
+  if (!tracePayload || tracePayload.length < 2) {
+    drawEmptyTargetPreview(canvas, options);
+    return false;
+  }
+
+  const thresholdG = options.thresholdG ?? 12;
+  const targetFace = getTargetViewPreset(
+    options.targetViewMode ?? "normalized",
+    options.targetDistanceM ?? 70,
+  );
+  refreshInkColors();
+  const data = hasAimTrace(tracePayload) ? tracePayload : decimateTrace(tracePayload);
+  const { ctx, side, cx, cy, maxRadius } = prepareCanvas(canvas);
+
+  ctx.clearRect(0, 0, side, side);
+  if (data.some((point) => point.accelAvailable === false) && !hasAimTrace(data)) {
+    ctx.fillStyle = inkColors.follow;
+    ctx.font = "10px sans-serif";
+    ctx.fillText("Angles saved", 6, cy - 6);
+    ctx.fillText("Pin not calculated", 6, cy + 10);
+    return false;
+  }
+  if (hasAimTrace(data)) {
+    const release = findReleaseIndex(data, thresholdG, false);
+    return drawAimTrace(ctx, data, {
+      cx, cy, radius: maxRadius, mode: options.targetViewMode ?? "normalized", compact: true,
+      phaseAt: (index) => phaseForIndex(index, release.releaseIdx, release.hasRelease, data.length),
+      phaseColor: (index) => phaseColor(phaseForIndex(index, release.releaseIdx, release.hasRelease, data.length)),
+    });
+  }
+  drawTargetFace(ctx, {
+    cx,
+    cy,
+    maxRadius,
+    preset: targetFace,
+    showLabel: false,
+  });
+  ctx.fillStyle = inkColors.follow;
+  ctx.font = "10px sans-serif";
+  ctx.fillText("Legacy cant/pitch", 6, 12);
+
+  const { releaseIdx, hasRelease } = findReleaseIndex(data, thresholdG);
+  const holdData = holdWindow(data, releaseIdx, hasRelease);
+  const center = reviewTraceCenter(data, releaseIdx, hasRelease, holdData);
+  const scale = computePreviewMapScale(data, center, maxRadius);
+  const mapPoint = (pt) => ({
+    x: cx - ((pt.roll || 0) - center.roll) * scale,
+    y: cy - ((pt.pitch || 0) - center.pitch) * scale,
+  });
+
+  ctx.lineWidth = 1.6;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  for (let i = 1; i < data.length; i++) {
+    const p1 = mapPoint(data[i - 1]);
+    const p2 = mapPoint(data[i]);
+    const phase = phaseForIndex(i, releaseIdx, hasRelease, data.length);
+    ctx.strokeStyle = phaseColor(phase);
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
+  }
+
+  if (hasRelease && releaseIdx > 1 &&
+      phaseForIndex(releaseIdx - 1, releaseIdx, hasRelease, data.length) === "break" &&
+      phaseForIndex(releaseIdx, releaseIdx, hasRelease, data.length) === "release") {
+    const boundary = mapPoint(data[releaseIdx - 1]);
+    ctx.strokeStyle = phaseColor("release");
+    ctx.fillStyle = "rgba(255, 93, 115, 0.2)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(boundary.x, boundary.y, Math.max(4, maxRadius * 0.1), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  return true;
+}

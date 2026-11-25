@@ -1,0 +1,42 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { fitReviewCamera, updateReviewCamera, cameraPointUsable } from '../app/ui/review-camera.js';
+import { aimTraceLayout } from '../app/ui/aim-trace.js';
+const point=(tUs,x,y)=>({tUs,aim:{version:1,referenceId:'r',distanceMeters:18,faceDiameterCm:40,xMeters:x,yMeters:y,referenceWindowMs:[-1500,-300]}});
+const points=[point(-1500000,0,0),point(-300000,0.02,0.03),point(0,0.03,0),point(100000,1,0.5),point(500000,3,-5),point(800000,1,-40),point(930000,-169,-1672),point(950000,null,null)];
+const dims={cx:400,cy:300};
+test('auto camera uses the visible prefix, not future fall or near-parallel rays',()=>{
+ const early=fitReviewCamera(points,{...dims,progress:3/8});
+ const later=fitReviewCamera(points,{...dims,progress:6/8});
+ const all=fitReviewCamera(points,{...dims,mode:'full'});
+ assert.ok(early.scale>later.scale*100);
+ assert.equal(later.scale,all.scale);
+ assert.equal(all.outsideTarget,true);
+ assert.equal(cameraPointUsable(points[6]),false);
+ assert.equal(cameraPointUsable(points[7]),false);
+ assert.equal(fitReviewCamera(points,{...dims,mode:'aim'}).scale,early.scale);
+});
+test('camera preserves target proportions and pan, without altering measurements',()=>{
+ const before=structuredClone(points);
+ const camera={...fitReviewCamera(points,{...dims,mode:'full'}),panX:42,panY:-23};
+ const layout=aimTraceLayout(points,{...dims,radius:250,mode:'fit',camera});
+ const origin=layout.map(points[0]), moved=layout.map(points[4]);
+ assert.deepEqual(origin,{x:442,y:277});
+ assert.ok(moved.y>origin.y);
+ assert.ok(Math.abs((moved.y-origin.y)/layout.faceRadiusPixels-25)<1e-9);
+ assert.equal(layout.map(points[6]),null);
+ assert.deepEqual(points,before);
+});
+test('playing camera fits each prefix; seek, resize and shot changes reset smoothing',()=>{
+ const canvas={},state={reviewMode:true,reviewCameraMode:'auto',reviewShotId:'a',replayActive:true};
+ const a=updateReviewCamera(canvas,{...state,replayProgress:3/8},points,{...dims,now:0});
+ const b=updateReviewCamera(canvas,{...state,replayProgress:5/8},points,{...dims,now:16});
+ assert.ok(b.scale<a.scale); assert.ok(b.scale<=b.hardScale);
+ const rewind=updateReviewCamera(canvas,{...state,replayProgress:3/8},points,{...dims,now:32});
+ assert.equal(rewind.scale,a.scale);
+ const resized=updateReviewCamera(canvas,{...state,replayProgress:3/8},points,{cx:300,cy:200,now:48});
+ assert.equal(resized.scale,fitReviewCamera(points,{cx:300,cy:200,progress:3/8}).scale);
+ const manual=updateReviewCamera(canvas,{...state,reviewCameraMode:'manual',reviewCameraScale:0.02,reviewPanX:5,reviewPanY:9,replayProgress:1},points,{...dims,now:64});
+ assert.equal(manual.scale,0.02);assert.equal(manual.panX,5);assert.equal(manual.panY,9);
+ assert.equal(updateReviewCamera(canvas,{...state,reviewMode:false},points,dims),null);
+});
