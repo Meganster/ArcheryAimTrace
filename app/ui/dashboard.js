@@ -2,12 +2,12 @@
 // Pure view code — it reads from the store and telemetry, never the device.
 
 import { get } from "../core/db.js";
-import { drawTraceChart, reviewTimeRangeUs } from "./trace-chart.js?v=aim-pipeline-163";
+import { drawTraceChart, reviewTimeRangeUs } from "./trace-chart.js?v=aim-pipeline-164";
 import {
   calibratedAngle,
   initOrientationVisualizer,
   wrapAngleDeg,
-} from "./bow-3d.js?v=aim-pipeline-163";
+} from "./bow-3d.js?v=aim-pipeline-164";
 
 async function getActiveArrowSpeed() {
   const activeBowId = localStorage.getItem("openfloat_active_bow_id");

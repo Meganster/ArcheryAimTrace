@@ -149,9 +149,11 @@ architecture, design intent, and forward-looking targets, see
 - **Shot Comparison in Trace Review**: While reviewing any saved shot on the Pin Float target, use **Compare with** to overlay another shot (release-centered, matched scale) on the same replay scrubber.
 - **Interactive Connection Badge**: Easily toggle sensor connection by clicking the connection status badge in the top left of the header.
 - **Steady Aim Training**: The Steady Aim tab runs a guided hold drill with a
-  5-second draw countdown, configurable hold duration (5–30 s), live Pin Float
-  tracing, steadiness scoring (sigma ellipse, cant/pitch deviation, max float),
-  coaching feedback, and optional save to IndexedDB as a labeled practice shot.
+  configurable sets, repetitions, draw/hold/rest intervals, sound cues and
+  pause/resume. Defaults: 3 sets × 10 reps, 7 s draw, 3 s hold, 3 s rep rest,
+  2 min set rest. Each completed hold and trace are automatically saved together
+  in IndexedDB, with a saved-holds counter and retry on storage failure. Saved
+  holds survive disconnects and reloads; incomplete holds are excluded.
 - **Bow Setup 3D Customization**: The Bow Setup tab loads `Blender/BowModel.glb`
   and creates color pickers from the named compound-bow materials in the GLB.
   Current bow materials are `string`, `cam`, `riser`, `grip`, and `text`; color

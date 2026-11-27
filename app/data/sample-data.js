@@ -5,7 +5,7 @@
 // SAMPLE_DEVICE_ID so the app never syncs them to the cloud and can remove them
 // on request.
 
-import { SAMPLE_SHOTS } from "./sample-shots-data.js?v=aim-pipeline-163";
+import { SAMPLE_SHOTS } from "./sample-shots-data.js?v=aim-pipeline-164";
 
 export const SAMPLE_DEVICE_ID = "OpenFloat-Demo";
 

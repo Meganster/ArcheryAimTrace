@@ -1,5 +1,5 @@
 // Experimental review-only camera. Measurement coordinates stay unchanged.
-import { validAimPoint } from '../telemetry/aim-projection.js?v=aim-pipeline-163';
+import { validAimPoint } from '../telemetry/aim-projection.js?v=aim-pipeline-164';
 
 export const TARGET_VIEW_ANGLE_LIMIT = 80;
 const views = new WeakMap();

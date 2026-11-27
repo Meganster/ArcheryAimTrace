@@ -31,7 +31,9 @@ it can be used offline as an installed web app.
 - **Steady Aim:** run configurable sets and repetitions with draw, hold, and
   rest intervals, sound cues, and pause/resume. Defaults are 3 sets of 10,
   7 seconds to draw, 3 seconds to hold, 3 seconds between repetitions,
-  and 2 minutes between sets.
+  and 2 minutes between sets. Each completed hold and its trace are saved
+  automatically to this browser’s local database. A disconnect or page reload
+  retains saved holds; an interrupted, incomplete hold is excluded.
 - **Settings → Calibration:** configure sensor/model alignment, zero the
   orientation, calibrate gyroscope bias, and capture the target center.
 - **Settings → Bow Setup:** customize the 3D bow. General also contains bow

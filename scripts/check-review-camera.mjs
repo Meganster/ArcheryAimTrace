@@ -9,9 +9,9 @@ try {
  const page=await browser.newPage({viewport:{width:1440,height:1100}}),errors=[];
  page.on('pageerror',e=>errors.push(e.message));
  await page.goto(process.env.BASE_URL || 'http://127.0.0.1:4180/',{waitUntil:'networkidle'});
- await page.waitForFunction(()=>document.body.dataset.appBuild==='aim-pipeline-163');
+ await page.waitForFunction(()=>document.body.dataset.appBuild==='aim-pipeline-164');
  await page.evaluate(async ({shot,trace})=>{
-  const {put,getAll,remove}=await import('/app/core/db.js?v=aim-pipeline-163');
+  const {put,getAll,remove}=await import('/app/core/db.js?v=aim-pipeline-164');
   for(const s of await getAll('shots'))await remove('shots',s.id);
   await put('shots',shot);await put('shot_traces',trace);
  },shot);
@@ -19,7 +19,7 @@ try {
  await page.locator('.history-item [data-shot-review]').click();
  await page.locator('.inline-shot-review #reviewCameraControls').waitFor({state:'visible'});
  const read=()=>page.evaluate(async()=>{
-  const {getReviewCamera}=await import('/app/ui/review-camera.js?v=aim-pipeline-163');
+  const {getReviewCamera}=await import('/app/ui/review-camera.js?v=aim-pipeline-164');
   const c=getReviewCamera(document.getElementById('traceCanvas'));
   return c&&{scale:c.scale,panX:c.panX,panY:c.panY,outside:c.outsideTarget,count:c.count};
  });
@@ -71,7 +71,7 @@ try {
  await page.evaluate(()=>new Promise(requestAnimationFrame));
  assert.ok((await read()).scale>pinchBefore.scale*1.4,'pinch zoom updates camera');
  await cdp.detach();
- const saved=await page.evaluate(async id=>(await import('/app/core/db.js?v=aim-pipeline-163')).get('shot_traces',id),shot.shot.id);
+ const saved=await page.evaluate(async id=>(await import('/app/core/db.js?v=aim-pipeline-164')).get('shot_traces',id),shot.shot.id);
  assert.deepEqual(saved,shot.trace);assert.deepEqual(errors,[]);
  console.log(JSON.stringify({dynamicScale:true,manualZoom:true,pan:true,autoReset:true,replay:true,projectionWarning:true,mobile:true,pinch:true,rawAndScoreUnchanged:true,errors}));
 } finally {await browser.close();}

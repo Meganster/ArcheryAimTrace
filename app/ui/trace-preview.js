@@ -1,7 +1,7 @@
 // Mini Pin Float target previews for shot list cards.
 
-import { drawTargetFace, getTargetViewPreset } from "./target-face.js?v=aim-pipeline-163";
-import { drawAimTrace, hasAimTrace } from "./aim-trace.js?v=aim-pipeline-163";
+import { drawTargetFace, getTargetViewPreset } from "./target-face.js?v=aim-pipeline-164";
+import { drawAimTrace, hasAimTrace } from "./aim-trace.js?v=aim-pipeline-164";
 const PREVIEW_SCALE_FIT = 0.9;
 const PREVIEW_RING_INSET = 0.43;
 const PREVIEW_CANVAS_PAD = 3;

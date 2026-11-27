@@ -8,9 +8,9 @@ const page = await browser.newPage({viewport:{width:1400,height:1100}});
 await page.addInitScript(() => { window.canvasLabels=[]; const fill=CanvasRenderingContext2D.prototype.fillText; CanvasRenderingContext2D.prototype.fillText=function(text,...args){window.canvasLabels.push(String(text));if(window.canvasLabels.length>5000)window.canvasLabels.splice(0,1000);return fill.call(this,text,...args)}; });
 const errors=[]; page.on('pageerror', e=>errors.push(e.message));
 await page.goto(process.env.BASE_URL || 'http://127.0.0.1:4178/', {waitUntil:'networkidle'});
-await page.waitForFunction(()=>document.body.dataset.appBuild==='aim-pipeline-163');
+await page.waitForFunction(()=>document.body.dataset.appBuild==='aim-pipeline-164');
 await page.evaluate(async () => {
- const {put,getAll,remove} = await import('/app/core/db.js?v=aim-pipeline-163');
+ const {put,getAll,remove} = await import('/app/core/db.js?v=aim-pipeline-164');
  for (const s of await getAll('shots')) { await remove('shot_traces',s.id); await remove('shots',s.id); }
  for(let j=0;j<3;j++) {
   const id=`test-offline-${j}`, payload=[];
@@ -40,7 +40,7 @@ assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= inne
 assert.match(await page.locator('#targetFaceLabel').textContent(), /30m.*80 cm.*saved geometry/);
 assert.equal(await page.locator('#targetDistanceSelect').isDisabled(),true);
 const saved = await page.evaluate(async()=>{
- const {get,getAll}=await import('/app/core/db.js?v=aim-pipeline-163');
+ const {get,getAll}=await import('/app/core/db.js?v=aim-pipeline-164');
  const trace=await get('shot_traces','test-offline-0'); const shots=await getAll('shots');
  return {raw:trace.raw,payloadHasAim:trace.payload.some(p=>p.aim),analysis:trace.analysis.status,distance:trace.analysis.parameters.distanceMeters,series:new Set(shots.map(s=>s.offline_series_id)).size,settings:JSON.parse(localStorage.getItem('openfloat_settings')).offlineAnalysisParameters};
 });

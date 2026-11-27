@@ -1,13 +1,13 @@
-import { updateReviewCamera } from './review-camera.js?v=aim-pipeline-163';
+import { updateReviewCamera } from './review-camera.js?v=aim-pipeline-164';
 // 2D shot-trace chart renderer: paints the live/review trace canvas (target
 // view with phase-colored Pin Float trace, or the line view with accel /
 // quaternion series and the mic band) from store state each frame.
 
-import { micChartPointsFromSeries } from "../protocol/trace.js?v=aim-pipeline-163";
-import { cssVar } from "./bow-3d.js?v=aim-pipeline-163";
-import { drawTargetFace, getTargetViewPreset } from "./target-face.js?v=aim-pipeline-163";
-import { drawAimTrace, hasAimTrace } from "./aim-trace.js?v=aim-pipeline-163";
-import { aimTrackingStatus } from "../telemetry/aim-capture.js?v=aim-pipeline-163";
+import { micChartPointsFromSeries } from "../protocol/trace.js?v=aim-pipeline-164";
+import { cssVar } from "./bow-3d.js?v=aim-pipeline-164";
+import { drawTargetFace, getTargetViewPreset } from "./target-face.js?v=aim-pipeline-164";
+import { drawAimTrace, hasAimTrace } from "./aim-trace.js?v=aim-pipeline-164";
+import { aimTrackingStatus } from "../telemetry/aim-capture.js?v=aim-pipeline-164";
 
 function reviewMicChartData(state) {
   if (!state.reviewMode) return null;

@@ -1,8 +1,8 @@
-import { computeOfflineScore } from './offline-score.js?v=aim-pipeline-163';
+import { computeOfflineScore } from './offline-score.js?v=aim-pipeline-164';
 // Pure, reproducible analysis of bow-aligned, timed device traces.
 // Raw payload/bytes are never overwritten. Detector time is not arrow departure time.
-import { aimDirection, createAimReferenceFromDirection, captureAimPoint, aimAngles } from './aim-projection.js?v=aim-pipeline-163';
-import { unscoredFields } from '../core/shot-record.js?v=aim-pipeline-163';
+import { aimDirection, createAimReferenceFromDirection, captureAimPoint, aimAngles } from './aim-projection.js?v=aim-pipeline-164';
+import { unscoredFields } from '../core/shot-record.js?v=aim-pipeline-164';
 export const OFFLINE_AIM_VERSION = 1;
 export const DEFAULT_OFFLINE_PARAMETERS = Object.freeze({
   referenceWindowMs: [-1500, -300], preWindowMs: [-300, 0], postWindowMs: [100, 1000],

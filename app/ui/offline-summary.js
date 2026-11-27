@@ -1,4 +1,4 @@
-import { summarizeOfflineSeries } from '../telemetry/offline-aim.js?v=aim-pipeline-163';
+import { summarizeOfflineSeries } from '../telemetry/offline-aim.js?v=aim-pipeline-164';
 const escape = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const number = (n) => Number.isFinite(n) ? n.toFixed(3) : '—';
 export function offlineMetricsText(analysis) {

@@ -4,7 +4,7 @@
 
 export const FLOAT_SCORE_VERSION = "openfloat-float-score-v1";
 export const AIM_SCORE_VERSION = "openfloat-aim-score-v1";
-import { aimAngles } from "./aim-projection.js?v=aim-pipeline-163";
+import { aimAngles } from "./aim-projection.js?v=aim-pipeline-164";
 
 const LIVE_SCORE_WINDOW = 120;
 

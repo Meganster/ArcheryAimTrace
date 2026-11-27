@@ -1,13 +1,13 @@
 // Steady Aim Training Game UI Module
 // Runs the set/repetition program, audio cues, hold traces and saved results.
 
-import { put, generateUUID } from "../core/db.js?v=aim-pipeline-163";
-import { computeFloatScoreFromTrace } from "../telemetry/score.js?v=aim-pipeline-163";
-import { drawTargetFace, getTargetViewPreset } from "./target-face.js?v=aim-pipeline-163";
-import { drawAimTrace, hasAimTrace } from "./aim-trace.js?v=aim-pipeline-163";
-import { aimAngles } from "../telemetry/aim-projection.js?v=aim-pipeline-163";
+import { saveShotWithTrace, generateUUID } from "../core/db.js?v=aim-pipeline-164";
+import { computeFloatScoreFromTrace } from "../telemetry/score.js?v=aim-pipeline-164";
+import { drawTargetFace, getTargetViewPreset } from "./target-face.js?v=aim-pipeline-164";
+import { drawAimTrace, hasAimTrace } from "./aim-trace.js?v=aim-pipeline-164";
+import { aimAngles } from "../telemetry/aim-projection.js?v=aim-pipeline-164";
 
-import { createTrainingClock, STEADY_AIM_PROGRAM, TRAINING_LIMITS, validateTrainingProgram, trainingPhases } from "./training-program.js?v=aim-pipeline-163";
+import { createTrainingClock, STEADY_AIM_PROGRAM, TRAINING_LIMITS, validateTrainingProgram, trainingPhases } from "./training-program.js?v=aim-pipeline-164";
 
 // Marker colors that must flip with the page theme (white on the classic dark
 // canvas, ink on light themes). Falls back to the classic palette when the
@@ -44,7 +44,7 @@ function getMaxFloatSpan(samples) {
   for (let i = 0; i < samples.length; i += step) {
     pts.push(samples[i]);
   }
-  
+
   for (let i = 0; i < pts.length; i++) {
     for (let j = i + 1; j < pts.length; j++) {
       const a = aimAngles(pts[i]);
@@ -62,7 +62,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
   if (!el.trainingTargetCanvas) return;
 
   const ctx = el.trainingTargetCanvas.getContext("2d");
-  
+
   let gameState = "idle";
   let timerInterval = null;
   let animationFrame = null;
@@ -73,6 +73,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
   const fields = Object.fromEntries(Object.keys(TRAINING_LIMITS).map(key => [key, el[`training_${key}`]]));
   let runToken = 0;
   let holds = [];
+  let saveQueue = Promise.resolve();
   let completedReps = 0;
   let holdStartedAt = null;
   let refRoll = 0;
@@ -145,10 +146,10 @@ export function mountTraining({ store, telemetry, el, bus }) {
   // React to connection states in the reactive store
   store.subscribe((state) => {
     const connected = state.connected;
-    if (!connected && !["idle", "finished", "saving"].includes(gameState)) {
+    if (!connected && !["idle", "finished"].includes(gameState)) {
       endSession("Sensor disconnected. Session stopped.");
     }
-    
+
     if (el.startTrainingBtn) {
       el.startTrainingBtn.disabled = !connected || gameState !== "idle";
     }
@@ -182,11 +183,11 @@ export function mountTraining({ store, telemetry, el, bus }) {
   // Listen to raw samples from event bus to collect high-res trace data
   bus.on("sample", (sample) => {
     if (gameState !== "holding") return;
-    
+
     const state = store.get();
     const now = performance.now();
     if (now >= clock.snapshot(now).deadline) return;
-    
+
     trainingSamples.push({
       aim: state.aim,
       roll: state.roll,
@@ -209,6 +210,13 @@ export function mountTraining({ store, telemetry, el, bus }) {
   el.pauseTrainingBtn.addEventListener("click", togglePause);
   el.saveTrainingShotBtn.addEventListener("click", saveSession);
   el.discardTrainingShotBtn.addEventListener("click", discardSession);
+  window.addEventListener("beforeunload", event => {
+    if (holds.some(hold => !hold.saved)) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+  });
+  updateSaveStatus();
 
   // Resize canvas handler
   function resizeCanvas() {
@@ -229,7 +237,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
     const rect = canvas.getBoundingClientRect();
     const w = rect.width;
     const h = rect.height;
-    
+
     // Ensure canvas backing store matches bounding rect
     const dpr = window.devicePixelRatio || 1;
     if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
@@ -299,7 +307,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
       if (liveDotRoll !== null) {
         const lx = cx + (liveDotRoll - refRoll) * scale;
         const ly = cy - (liveDotPitch - refPitch) * scale;
-        
+
         ctx.fillStyle = markerInk.liveDot; // Live indicator dot (cyan)
         ctx.beginPath();
         ctx.arc(lx, ly, 6, 0, Math.PI * 2);
@@ -337,7 +345,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
       if (ellipseData) {
         const ecx = cx + (ellipseData.rollMean - avgR) * scale;
         const ecy = cy - (ellipseData.pitchMean - avgP) * scale;
-        
+
         ctx.save();
         ctx.translate(ecx, ecy);
         ctx.rotate(-ellipseData.angle);
@@ -398,7 +406,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
     const pitches = points.map((pt) => pt.pitch || 0);
     const rollMean = mean(rolls);
     const pitchMean = mean(pitches);
-    
+
     let covRoll = 0;
     let covPitch = 0;
     let covCross = 0;
@@ -443,6 +451,7 @@ export function mountTraining({ store, telemetry, el, bus }) {
     gameState = "starting";
     const token = ++runToken;
     holds = [];
+    updateSaveStatus();
     completedReps = 0;
     trainingSamples = [];
     el.startTrainingBtn.classList.add("hidden");
@@ -516,7 +525,8 @@ export function mountTraining({ store, telemetry, el, bus }) {
       if (trainingSamples.length >= 5) {
         holds.push({ id: generateUUID(), timestamp: holdStartedAt,
           set: state.ended.set, rep: state.ended.rep, samples: trainingSamples,
-          ...holdStats(trainingSamples) });
+          program: { ...program }, ...holdStats(trainingSamples) });
+        saveSession();
       }
     }
     if (state.complete) endSession("Training complete.", true);
@@ -592,15 +602,15 @@ export function mountTraining({ store, telemetry, el, bus }) {
     el.trainingDisplayActive.classList.add("hidden");
     el.trainingProgress.textContent = `${message} ${completedReps} / ${program.sets * program.reps} completed · ${holds.length} holds recorded`;
     el.trainingResultsCard.classList.remove("hidden");
-    el.saveTrainingShotBtn.disabled = !holds.length;
-    el.saveTrainingShotBtn.textContent = `Save ${holds.length} holds`;
+    saveSession();
+    updateSaveStatus();
     el.resultSteadinessScore.textContent = holds.length ? Math.round(mean(holds.map(h => h.score))) : "—";
     el.resultAvgCantDev.textContent = holds.length ? `${mean(holds.map(h => h.rollStd)).toFixed(2)}°` : "—";
     el.resultAvgPitchDev.textContent = holds.length ? `${mean(holds.map(h => h.pitchStd)).toFixed(2)}°` : "—";
     el.resultMaxFloat.textContent = holds.length ? `${Math.max(...holds.map(h => h.maxFloat)).toFixed(2)}°` : "—";
     el.resultCoachingTitle.textContent = message;
     el.resultCoachingText.textContent = holds.length
-      ? "Average score and deviations across recorded holds. The target shows the last recorded hold. Each hold is saved separately."
+      ? "Average score and deviations across recorded holds. The target shows the last recorded hold. Completed holds are saved automatically in Saved Shots."
       : "No complete holds with enough sensor data were recorded.";
     trainingSamples = holds.at(-1)?.samples || [];
     el.trainingTargetWrapper.classList.toggle("hidden", !holds.length);
@@ -608,137 +618,136 @@ export function mountTraining({ store, telemetry, el, bus }) {
     bus.emit("log", `Steady Aim: ${message} ${completedReps}/${program.sets * program.reps} repetitions, ${holds.length} recorded holds.`);
   }
 
-  async function saveSession() {
-    if (gameState !== "finished" || !holds.length) return;
-    gameState = "saving";
-    el.discardTrainingShotBtn.disabled = true;
-    
-    el.saveTrainingShotBtn.disabled = true;
-    el.saveTrainingShotBtn.textContent = "Saving...";
-    
-    try {
-      for (const hold of holds) {
-        if (hold.saved) continue;
-        const trainingSamples = hold.samples;
-        const rolls = trainingSamples.map((s) => s.roll);
-        const pitches = trainingSamples.map((s) => s.pitch);
-        const avgRoll = mean(rolls);
-        const avgPitch = mean(pitches);
-        const score = hold.score;
-      
-        let maxG = 0;
-        for (const s of trainingSamples) {
-          const g = Math.hypot(s.ax, s.ay, s.az);
-          if (g > maxG) maxG = g;
-        }
-      
-        const sessionShotId = hold.id;
-        const timestamp = hold.timestamp;
-        const label = `Steady Aim · Set ${hold.set}/${program.sets} · Rep ${hold.rep}/${program.reps} · ${program.holdSeconds}s`;
-        const elapsedMs = trainingSamples.at(-1).timestamp - trainingSamples[0].timestamp;
-        const sampleRateHz = elapsedMs > 0 ? (trainingSamples.length - 1) * 1000 / elapsedMs : 52;
-        const traceForScore = trainingSamples.map((s) => ({
-          tUs: Math.round((s.timestamp - trainingSamples[0].timestamp) * 1000),
-          releaseTimingAvailable: false,
-          ax: s.ax,
-          ay: s.ay,
-          az: s.az,
-          gx: s.gx || 0,
-          gy: s.gy || 0,
-          gz: s.gz || 0,
-          roll: s.roll,
-          pitch: s.pitch,
-          yaw: s.yaw || 0,
-          aim: s.aim,
-          micAmp: s.micAmp || 0,
-        }));
-        const floatScore = computeFloatScoreFromTrace(traceForScore, { sampleRateHz, isManual: true });
-      
-        const shotRecord = {
-          id: sessionShotId,
-          session_id: null,
-          device_id: "OpenFloat-Sensor",
-          timestamp,
-          peak_g: Number(maxG.toFixed(2)),
-          cant_angle_deg: Number(avgRoll.toFixed(1)),
-          pitch_angle_deg: Number(avgPitch.toFixed(1)),
-          yaw_angle_deg: 0,
-          roll_angle_deg: Number(avgRoll.toFixed(1)),
-          stability_score: score,
-          shot_score: floatScore.formScore,
-          hold_stability: floatScore.holdStability,
-          release_quality: floatScore.releaseQuality,
-          follow_through: floatScore.followThrough,
-          level_consistency: floatScore.levelConsistency,
-          score_version: floatScore.scoreVersion,
-          packet_loss_count: 0,
-          label: label
-        };
-      
-        await put("shots", shotRecord);
-        await put("sync_queue", {
-          table: "shots",
-          action: "CREATE",
-          targetId: sessionShotId,
-          payload: shotRecord,
-          status: "pending"
-        });
-      
-        const tracePayload = {
-          shot_id: sessionShotId,
-          sample_rate_hz: sampleRateHz,
-          source: "browser-manual-recording",
-          payload: traceForScore
-        };
-      
-        await put("shot_traces", tracePayload);
-        await put("sync_queue", {
-          table: "shot_traces",
-          action: "CREATE",
-          targetId: sessionShotId,
-          payload: tracePayload,
-          status: "pending"
-        });
-      
-        bus.emit("log", `Steady Aim training session saved successfully (ID: ${sessionShotId.slice(0, 8)}).`);
-      
-        // Notify main app to refresh history list & recent shots
-        bus.emit("shot-saved", {
-          shotId: null,
-          stored: false,
-          localShotId: sessionShotId
-        });
-      
-        bus.emit("shot-trace-saved", {
-          localShotId: sessionShotId,
-          deviceShotId: null
-        });
-      
-        hold.saved = true;
-      }
+  function updateSaveStatus() {
+    const saved = holds.filter(hold => hold.saved).length;
+    const pending = holds.filter(hold => hold.saving).length;
+    const failed = holds.filter(hold => hold.error && !hold.saving && !hold.saved).length;
+    if (el.trainingSaveStatus) {
+      el.trainingSaveStatus.textContent = !holds.length
+        ? "Each completed hold is saved automatically on this browser."
+        : `${saved} / ${holds.length} holds saved` + (pending ? " · Saving…" : "") +
+          (failed ? ` · ${failed} not saved. Keep this page open; retry after stopping the training.` : "");
+      el.trainingSaveStatus.style.color = failed ? "var(--red)" : "var(--muted)";
+    }
+    el.saveTrainingShotBtn.hidden = !failed && !pending;
+    el.saveTrainingShotBtn.disabled = !!pending || !failed;
+    el.saveTrainingShotBtn.textContent = pending ? "Saving…" : `Retry saving ${failed} holds`;
+    el.discardTrainingShotBtn.disabled = !!pending;
+    el.discardTrainingShotBtn.textContent = failed ? "Dismiss unsaved results" : "Done";
+  }
 
-      // Clear results and go back to default screen
-      resetToIdle();
-      bus.emit("log", "Steady Aim holds saved successfully.");
-    } catch (err) {
-      gameState = "finished";
-      console.error("Failed to save training shot:", err);
-      bus.emit("log", `Failed to save training shot: ${err.message}`);
-      alert(`Error saving training shot: ${err.message}`);
-    } finally {
-      el.saveTrainingShotBtn.disabled = false;
-      el.saveTrainingShotBtn.textContent = "Save holds";
-      el.discardTrainingShotBtn.disabled = false;
+  function saveSession() {
+    for (const hold of holds) {
+      if (hold.saved || hold.saving) continue;
+      const sessionHolds = holds;
+      hold.saving = true;
+      hold.error = null;
+      // Serialize writes without delaying the draw/hold/rest clock. Every job
+      // owns its hold samples and program, so later phases cannot replace them.
+      saveQueue = saveQueue.then(async () => {
+        try {
+          await persistHold(hold);
+          hold.saved = true;
+        } catch (error) {
+          hold.error = error.message || String(error);
+          try { bus.emit("log", `Steady Aim hold not saved: ${hold.error}. Keep the page open and retry.`); }
+          catch (listenerError) { console.error(listenerError); }
+        } finally {
+          hold.saving = false;
+          if (holds === sessionHolds) updateSaveStatus();
+        }
+      });
+    }
+    updateSaveStatus();
+    return saveQueue;
+  }
+
+  async function persistHold(hold) {
+    const trainingSamples = hold.samples;
+    const rolls = trainingSamples.map((s) => s.roll);
+    const pitches = trainingSamples.map((s) => s.pitch);
+    const avgRoll = mean(rolls);
+    const avgPitch = mean(pitches);
+    const score = hold.score;
+
+    let maxG = 0;
+    for (const s of trainingSamples) {
+      const g = Math.hypot(s.ax, s.ay, s.az);
+      if (g > maxG) maxG = g;
+    }
+
+    const sessionShotId = hold.id;
+    const timestamp = hold.timestamp;
+    const label = `Steady Aim · Set ${hold.set}/${hold.program.sets} · Rep ${hold.rep}/${hold.program.reps} · ${hold.program.holdSeconds}s`;
+    const elapsedMs = trainingSamples.at(-1).timestamp - trainingSamples[0].timestamp;
+    const sampleRateHz = elapsedMs > 0 ? (trainingSamples.length - 1) * 1000 / elapsedMs : 52;
+    const traceForScore = trainingSamples.map((s) => ({
+      tUs: Math.round((s.timestamp - trainingSamples[0].timestamp) * 1000),
+      releaseTimingAvailable: false,
+      ax: s.ax,
+      ay: s.ay,
+      az: s.az,
+      gx: s.gx || 0,
+      gy: s.gy || 0,
+      gz: s.gz || 0,
+      roll: s.roll,
+      pitch: s.pitch,
+      yaw: s.yaw || 0,
+      aim: s.aim,
+      micAmp: s.micAmp || 0,
+    }));
+    const floatScore = computeFloatScoreFromTrace(traceForScore, { sampleRateHz, isManual: true });
+
+    const shotRecord = {
+      id: sessionShotId,
+      session_id: null,
+      device_id: "OpenFloat-Sensor",
+      timestamp,
+      peak_g: Number(maxG.toFixed(2)),
+      cant_angle_deg: Number(avgRoll.toFixed(1)),
+      pitch_angle_deg: Number(avgPitch.toFixed(1)),
+      yaw_angle_deg: 0,
+      roll_angle_deg: Number(avgRoll.toFixed(1)),
+      stability_score: score,
+      shot_score: floatScore.formScore,
+      hold_stability: floatScore.holdStability,
+      release_quality: floatScore.releaseQuality,
+      follow_through: floatScore.followThrough,
+      level_consistency: floatScore.levelConsistency,
+      score_version: floatScore.scoreVersion,
+      packet_loss_count: 0,
+      label: label
+    };
+
+    const tracePayload = {
+      shot_id: sessionShotId,
+      sample_rate_hz: sampleRateHz,
+      source: "browser-manual-recording",
+      payload: traceForScore,
+    };
+    await saveShotWithTrace(shotRecord, tracePayload);
+    // A failed UI listener must not turn a committed recording into a failed save.
+    hold.saved = true;
+    try {
+      bus.emit("log", `Steady Aim hold automatically saved: Set ${hold.set}, Rep ${hold.rep}.`);
+      bus.emit("shot-saved", { shotId: null, stored: false, localShotId: sessionShotId });
+      bus.emit("shot-trace-saved", { localShotId: sessionShotId, deviceShotId: null });
+    } catch (error) {
+      console.error("Training saved, but a view could not refresh:", error);
     }
   }
 
   function cancelSession() {
-    if (["idle", "finished", "saving"].includes(gameState)) return;
+    if (["idle", "finished"].includes(gameState)) return;
     endSession("Session stopped; incomplete hold excluded.");
   }
 
   function discardSession() {
-    if (gameState !== "saving") resetToIdle();
+    if (holds.some(hold => hold.saving)) return;
+    if (holds.some(hold => !hold.saved) && !confirm(
+      "Some holds could not be saved. Dismiss these unsaved results? Already saved holds will remain in Saved Shots."
+    )) return;
+    resetToIdle();
   }
 
   function resetToIdle() {
@@ -756,5 +765,6 @@ export function mountTraining({ store, telemetry, el, bus }) {
     updateProgramSummary();
     trainingSamples = [];
     holds = [];
+    updateSaveStatus();
   }
 }

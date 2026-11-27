@@ -3,23 +3,23 @@
 // rolling trace buffer for the chart. It is the only thing that writes app
 // state into the reactive store.
 
-import { put, get, getAll, generateUUID } from "../core/db.js?v=aim-pipeline-163";
-import { captureAimPoint } from "./aim-projection.js?v=aim-pipeline-163";
+import { put, get, getAll, generateUUID } from "../core/db.js?v=aim-pipeline-164";
+import { captureAimPoint } from "./aim-projection.js?v=aim-pipeline-164";
 import {
   buildShotTraceRecord,
   buildFirmwareTraceRecord,
   extractMicWindow,
-} from "../protocol/trace.js?v=aim-pipeline-163";
+} from "../protocol/trace.js?v=aim-pipeline-164";
 import {
   computeFloatScoreFromTrace,
   computeLiveFloatScore,
   FLOAT_SCORE_VERSION,
-} from "./score.js?v=aim-pipeline-163";
+} from "./score.js?v=aim-pipeline-164";
 
-import { offlineShotFields, shotStoredAt, sameDeviceEvent } from "../core/shot-record.js?v=aim-pipeline-163";
+import { offlineShotFields, shotStoredAt, sameDeviceEvent } from "../core/shot-record.js?v=aim-pipeline-164";
 
-import { withOfflineAnalysis, offlineShotSummary } from './offline-aim.js?v=aim-pipeline-163';
-import { traceForReview } from '../protocol/trace.js?v=aim-pipeline-163';
+import { withOfflineAnalysis, offlineShotSummary } from './offline-aim.js?v=aim-pipeline-164';
+import { traceForReview } from '../protocol/trace.js?v=aim-pipeline-164';
 
 export const MAX_TRACE_POINTS = 1000;
 

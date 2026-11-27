@@ -1,7 +1,7 @@
-import { sessionOrder } from './session-order.js?v=aim-pipeline-163';
+import { sessionOrder } from './session-order.js?v=aim-pipeline-164';
 // Client-side IndexedDB database wrapper for ArcheryAimTrace.
 // Handles local storage of profiles, sessions, shots, traces, and the sync queue.
-import { shotTimeUnknown, shotStoredAt } from "./shot-record.js?v=aim-pipeline-163";
+import { shotTimeUnknown, shotStoredAt } from "./shot-record.js?v=aim-pipeline-164";
 
 // Keep the existing database name so a branding update retains local practice data.
 const DB_NAME = "openfloat_db";
@@ -20,6 +20,7 @@ export function initDb() {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
 
     request.onerror = (e) => {
+      dbPromise = null; // Allow a later retry after a temporary storage failure.
       console.error("IndexedDB error:", e.target.error);
       reject(e.target.error);
     };
@@ -92,6 +93,41 @@ export async function put(storeName, item) {
     store.transaction.onabort = () => reject(store.transaction.error || new Error("Storage transaction aborted"));
     store.transaction.onerror = () => reject(store.transaction.error || req.error);
     req.onerror = () => reject(req.error);
+  });
+}
+
+// A completed training hold is durable only when its shot, trace and sync tasks
+// commit together. Stable hold IDs make a retry after an uncertain result safe.
+export async function saveShotWithTrace(shot, trace) {
+  if (!shot?.id || trace?.shot_id !== shot.id) {
+    throw new Error("Shot and trace must have the same recording ID.");
+  }
+  const db = await initDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(["shots", "shot_traces", "sync_queue"], "readwrite");
+    let writeError;
+    tx.oncomplete = () => resolve(shot.id);
+    tx.onabort = () => reject(writeError || tx.error || new Error("Training save aborted"));
+    tx.onerror = () => {}; // onabort reports the rolled-back transaction.
+    const shots = tx.objectStore("shots"), traces = tx.objectStore("shot_traces");
+    const shotRequest = shots.get(shot.id);
+    shotRequest.onsuccess = () => {
+      const traceRequest = traces.get(shot.id);
+      traceRequest.onsuccess = () => {
+        if (shotRequest.result && traceRequest.result) return;
+        try {
+          shots.put(shot);
+          traces.put(trace);
+          const queue = tx.objectStore("sync_queue");
+          for (const [table, payload] of [["shots", shot], ["shot_traces", trace]]) {
+            queue.put({ table, action: "CREATE", targetId: shot.id, payload, status: "pending" });
+          }
+        } catch (error) {
+          writeError = error;
+          tx.abort();
+        }
+      };
+    };
   });
 }
 

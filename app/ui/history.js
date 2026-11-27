@@ -1,23 +1,23 @@
-import { savedOfflineScore, offlinePeerComparison } from '../telemetry/offline-score.js?v=aim-pipeline-163';
-import { offlineScoreReport, offlineSessionScoresHtml, offlineIssueLabel } from './offline-score.js?v=aim-pipeline-163';
-import { sessionOrder } from '../core/session-order.js?v=aim-pipeline-163';
-import { sessionTimelineHtml } from './session-timeline.js?v=aim-pipeline-163';
+import { savedOfflineScore, offlinePeerComparison } from '../telemetry/offline-score.js?v=aim-pipeline-164';
+import { offlineScoreReport, offlineSessionScoresHtml, offlineIssueLabel } from './offline-score.js?v=aim-pipeline-164';
+import { sessionOrder } from '../core/session-order.js?v=aim-pipeline-164';
+import { sessionTimelineHtml } from './session-timeline.js?v=aim-pipeline-164';
 // Shot history, review, recent shots, and deletion UI module.
 
-import { getAll, get, put, remove, deleteShotRecords, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=aim-pipeline-163";
-import { coachForScore } from "../telemetry/telemetry.js?v=aim-pipeline-163";
-import { resolveReviewMicSeries, traceForReview } from "../protocol/trace.js?v=aim-pipeline-163";
-import { drawEmptyTargetPreview, drawTraceTargetPreview, watchTracePreviewResize } from "./trace-preview.js?v=aim-pipeline-163";
-import { buildSessionFloatPlot, buildSessionReview } from "./session-review.js?v=aim-pipeline-163";
-import { targetViewSummary } from "./target-face.js?v=aim-pipeline-163";
+import { getAll, get, put, remove, deleteShotRecords, groupShotsByTime, SESSION_GAP_MS } from "../core/db.js?v=aim-pipeline-164";
+import { coachForScore } from "../telemetry/telemetry.js?v=aim-pipeline-164";
+import { resolveReviewMicSeries, traceForReview } from "../protocol/trace.js?v=aim-pipeline-164";
+import { drawEmptyTargetPreview, drawTraceTargetPreview, watchTracePreviewResize } from "./trace-preview.js?v=aim-pipeline-164";
+import { buildSessionFloatPlot, buildSessionReview } from "./session-review.js?v=aim-pipeline-164";
+import { targetViewSummary } from "./target-face.js?v=aim-pipeline-164";
 
-import { withOfflineAnalysis, offlineShotSummary, offlineParameters } from '../telemetry/offline-aim.js?v=aim-pipeline-163';
-import { suggestOfflineSeries } from '../telemetry/offline-series.js?v=aim-pipeline-163';
-import { offlineMetricsText } from './offline-summary.js?v=aim-pipeline-163';
+import { withOfflineAnalysis, offlineShotSummary, offlineParameters } from '../telemetry/offline-aim.js?v=aim-pipeline-164';
+import { suggestOfflineSeries } from '../telemetry/offline-series.js?v=aim-pipeline-164';
+import { offlineMetricsText } from './offline-summary.js?v=aim-pipeline-164';
 
-import { createOfflineComparisonPanel } from './offline-comparison.js?v=aim-pipeline-163';
+import { createOfflineComparisonPanel } from './offline-comparison.js?v=aim-pipeline-164';
 
-import { shotForDisplay, shotFloatScore, shotTimeLabel } from "../core/shot-record.js?v=aim-pipeline-163";
+import { shotForDisplay, shotFloatScore, shotTimeLabel } from "../core/shot-record.js?v=aim-pipeline-164";
 
 const displayScore = (shot) => shotFloatScore(shot) == null ? "Not calculated" : Math.round(shotFloatScore(shot));
 

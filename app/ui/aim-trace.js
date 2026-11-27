@@ -1,7 +1,7 @@
-import { validAimPoint } from "../telemetry/aim-projection.js?v=aim-pipeline-163";
-import { drawTargetFace } from "./target-face.js?v=aim-pipeline-163";
+import { validAimPoint } from "../telemetry/aim-projection.js?v=aim-pipeline-164";
+import { drawTargetFace } from "./target-face.js?v=aim-pipeline-164";
 
-import { cameraPointUsable } from './review-camera.js?v=aim-pipeline-163';
+import { cameraPointUsable } from './review-camera.js?v=aim-pipeline-164';
 
 export function hasAimTrace(data) {
   return data.some((point) => point.aim?.version === 1);

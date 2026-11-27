@@ -1,5 +1,5 @@
-const CACHE_NAME = "archeryaimtrace-v163";
-const TRACKING_BUILD = "aim-pipeline-163";
+const CACHE_NAME = "archeryaimtrace-v164";
+const TRACKING_BUILD = "aim-pipeline-164";
 const ASSETS = [
   "./",
   "./index.html",

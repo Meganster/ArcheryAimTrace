@@ -231,6 +231,12 @@ That's it — take a shot and it appears in **Recent Shots** with an ArcheryAimT
 Float Score. From here, explore **Steady Aim** for hold drills and **Saved
 Shots** for session review.
 
+Steady Aim automatically saves each completed hold and its trace to this
+browser’s local database. Watch the saved-holds counter; no final Save is
+required. Disconnecting stops the drill and excludes the incomplete hold, while
+completed, saved holds remain available after reloading. If saving fails, keep
+the page open and use **Retry saving** on the results screen.
+
 In **Saved Shots**, **Review** expands Trace Review Mode directly beneath the
 selected shot. Playback controls stay immediately below the target. Choose
 **Close review** to collapse it, or **Review** on another shot to switch the

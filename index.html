@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ArcheryAimTrace</title>
-  <link rel="stylesheet" href="styles.css?v=aim-pipeline-163">
+  <link rel="stylesheet" href="styles.css?v=aim-pipeline-164">
   <link rel="stylesheet" href="theme-graph-paper.css?v=proto-2" id="graphThemeLink">
   <meta name="theme-color" content="#061014" id="themeMetaColor">
   <script>
@@ -38,15 +38,15 @@
     })();
   </script>
   <link rel="manifest" href="manifest.json">
-  <link rel="icon" href="favicon.ico?v=aim-pipeline-163" sizes="any">
-  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png?v=aim-pipeline-163">
-  <link rel="apple-touch-icon" href="apple-touch-icon.png?v=aim-pipeline-163">
+  <link rel="icon" href="favicon.ico?v=aim-pipeline-164" sizes="any">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png?v=aim-pipeline-164">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png?v=aim-pipeline-164">
 </head>
 <body>
   <div class="app">
     <header>
       <div class="brand">
-        <img class="mark" src="icon-192.png?v=aim-pipeline-163" width="38" height="38" alt="">
+        <img class="mark" src="icon-192.png?v=aim-pipeline-164" width="38" height="38" alt="">
         <div>
           <h1>ArcheryAimTrace</h1>
           <p class="subtitle">Real-time bow movement, release quality, and practice history</p>
@@ -287,6 +287,7 @@
               </div>
               <p class="note">Sound cues: draw, hold, relax.</p>
               <strong id="trainingProgress" role="status">3 sets × 10 reps · 10 min 21 sec</strong>
+              <p id="trainingSaveStatus" class="note" role="status">Each completed hold is saved automatically on this browser.</p>
             </div>
 
             <div class="training-status-box" style="margin-top: 16px; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-soft); display: flex; flex-direction: column; gap: 4px; align-items: center; text-align: center;">
@@ -358,9 +359,9 @@
               <strong id="resultCoachingTitle" style="display: block; font-size: 13px; color: var(--text); margin-bottom: 4px;">--</strong>
               <p id="resultCoachingText" class="note" style="margin: 0; font-size: 12px; line-height: 1.4;">--</p>
             </div>
-            <div class="actions" style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 8px;">
-              <button id="saveTrainingShotBtn" class="primary" style="min-height: 38px;">Save holds</button>
-              <button id="discardTrainingShotBtn" class="secondary" style="min-height: 38px;">Dismiss</button>
+            <div class="actions" style="display: flex; justify-content: flex-end; gap: 8px;">
+              <button id="saveTrainingShotBtn" class="primary" style="min-height: 38px;" hidden>Retry saving</button>
+              <button id="discardTrainingShotBtn" class="secondary" style="min-height: 38px;">Done</button>
             </div>
           </div>
         </section>
@@ -972,6 +973,6 @@
     })();
   </script>
 
-  <script type="module" src="app/main.js?v=aim-pipeline-163"></script>
+  <script type="module" src="app/main.js?v=aim-pipeline-164"></script>
 </body>
 </html>

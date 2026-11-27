@@ -1,15 +1,15 @@
-import { getReviewCamera } from './ui/review-camera.js?v=aim-pipeline-163';
+import { getReviewCamera } from './ui/review-camera.js?v=aim-pipeline-164';
 // App entry point: build the shared bus + store, wire telemetry and UI, and
 // own the transport lifecycle (connect / disconnect).
 
 import { createStore, EventBus } from "./core/store.js";
-import { TelemetryStore } from "./telemetry/telemetry.js?v=aim-pipeline-163";
+import { TelemetryStore } from "./telemetry/telemetry.js?v=aim-pipeline-164";
 import { detectMountFromGravity } from "./telemetry/mount-mapping.js";
-import { createAimReference } from "./telemetry/aim-projection.js?v=aim-pipeline-163";
-import { aimCaptureReadiness, aimTrackingStatus } from "./telemetry/aim-capture.js?v=aim-pipeline-163";
-import { gyroCalibrationBusy, gyroCalibrationMessage } from "./telemetry/gyro-calibration.js?v=aim-pipeline-163";
-import { createAdapter } from "./device/adapters.js?v=aim-pipeline-163";
-import { mountDashboard, mountCalibrationPreview, mountLog } from "./ui/dashboard.js?v=aim-pipeline-163";
+import { createAimReference } from "./telemetry/aim-projection.js?v=aim-pipeline-164";
+import { aimCaptureReadiness, aimTrackingStatus } from "./telemetry/aim-capture.js?v=aim-pipeline-164";
+import { gyroCalibrationBusy, gyroCalibrationMessage } from "./telemetry/gyro-calibration.js?v=aim-pipeline-164";
+import { createAdapter } from "./device/adapters.js?v=aim-pipeline-164";
+import { mountDashboard, mountCalibrationPreview, mountLog } from "./ui/dashboard.js?v=aim-pipeline-164";
 import {
   MOUNT_ORIENTATIONS,
   cloneMountAxes,
@@ -18,14 +18,14 @@ import {
   mountOrientationSettings,
   mountOrientationState,
   rotateMountAxes,
-} from "./ui/bow-3d.js?v=aim-pipeline-163";
-import { initDb, getAll, get, put, remove, generateUUID } from "./core/db.js?v=aim-pipeline-163";
-import { CloudSyncAdapter } from "./telemetry/sync.js?v=aim-pipeline-163";
-import { mountTraining } from "./ui/training.js?v=aim-pipeline-163";
-import { mountGuide } from "./ui/guide.js?v=aim-pipeline-163";
-import { initDataBackup } from "./ui/data-backup.js?v=aim-pipeline-163";
-import { initHistory } from "./ui/history.js?v=aim-pipeline-163";
-import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=aim-pipeline-163";
+} from "./ui/bow-3d.js?v=aim-pipeline-164";
+import { initDb, getAll, get, put, remove, generateUUID } from "./core/db.js?v=aim-pipeline-164";
+import { CloudSyncAdapter } from "./telemetry/sync.js?v=aim-pipeline-164";
+import { mountTraining } from "./ui/training.js?v=aim-pipeline-164";
+import { mountGuide } from "./ui/guide.js?v=aim-pipeline-164";
+import { initDataBackup } from "./ui/data-backup.js?v=aim-pipeline-164";
+import { initHistory } from "./ui/history.js?v=aim-pipeline-164";
+import { generateSampleData, SAMPLE_DEVICE_ID } from "./data/sample-data.js?v=aim-pipeline-164";
 import {
   formatTargetFaceLabel,
   getTargetFacePreset,
@@ -33,9 +33,9 @@ import {
   targetFaceSummary,
   targetViewSummary,
   targetViewMode as normalizeTargetViewMode,
-} from "./ui/target-face.js?v=aim-pipeline-163";
+} from "./ui/target-face.js?v=aim-pipeline-164";
 
-const APP_BUILD = "aim-pipeline-163";
+const APP_BUILD = "aim-pipeline-164";
 const MODEL_ATTITUDE_VERSION = 3;
 
 const ELEMENT_IDS = [
@@ -56,7 +56,7 @@ const ELEMENT_IDS = [
   "guideSidebar", "guideContent", "historyList",
   "offlineCompareBtn", "offlineComparisonPanel", "offlineDistance", "offlineFace", "offlineSeriesName", "offlineAnalyzeBtn", "offlineGroupBtn", "offlineSuggestBtn", "offlineStatus",
   "historyBulkActions", "bulkSelectCount", "bulkDeleteBtn", "bulkCancelBtn", "historySelectModeBtn", "bulkSelectAllBtn", "historyDefaultActions",
-  "trainingProgress", "startTrainingBtn", "cancelTrainingBtn", "pauseTrainingBtn",
+  "trainingProgress", "trainingSaveStatus", "startTrainingBtn", "cancelTrainingBtn", "pauseTrainingBtn",
   "training_sets", "training_reps", "training_drawSeconds", "training_holdSeconds",
   "training_repRestSeconds", "training_setRestSeconds",
   "trainingStatusText", "trainingStatusDesc", "trainingDisplayDefault", "trainingDisplayActive",

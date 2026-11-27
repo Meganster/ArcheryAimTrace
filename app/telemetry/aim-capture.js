@@ -1,5 +1,5 @@
-import { aimDirection, validAimPoint } from "./aim-projection.js?v=aim-pipeline-163";
-import { gyroCalibrationBusy } from "./gyro-calibration.js?v=aim-pipeline-163";
+import { aimDirection, validAimPoint } from "./aim-projection.js?v=aim-pipeline-164";
+import { gyroCalibrationBusy } from "./gyro-calibration.js?v=aim-pipeline-164";
 
 export const AIM_SAMPLE_MAX_AGE_MS = 2000;
 

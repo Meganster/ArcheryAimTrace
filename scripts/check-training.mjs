@@ -16,7 +16,7 @@ try {
     document.querySelectorAll('.tab-view').forEach(e => e.classList.add('hidden-view'));
     document.getElementById('tabTraining').classList.remove('hidden-view');
     const { createStore, EventBus } = await import('/app/core/store.js');
-    const { mountTraining } = await import('/app/ui/training.js?v=aim-pipeline-163');
+    const { mountTraining } = await import('/app/ui/training.js?v=aim-pipeline-164');
     let now = 0, nextId = 0;
     const intervals = new Map(), frames = new Map();
     Object.defineProperty(performance, 'now', { value: () => now });
@@ -56,6 +56,13 @@ try {
   });
   const advance = ms => page.evaluate(ms => fixture.advance(ms), ms);
   const progress = () => page.locator('#trainingProgress').textContent();
+  const waitSaved = count => page.waitForFunction(count =>
+    document.getElementById('trainingSaveStatus').textContent === `${count} / ${count} holds saved`, count, { polling: 50 });
+  const counts = () => page.evaluate(async () => {
+    const db = await import('/app/core/db.js?v=aim-pipeline-164');
+    return [ (await db.getAll('shots')).length, (await db.getAll('shot_traces')).length,
+      (await db.getAll('sync_queue')).length ];
+  });
   await page.locator('#startTrainingBtn').click();
   await page.waitForFunction(() => cues.length === 1, null, { polling: 50 });
   assert.equal(await page.locator('#trainingCountdownVal').textContent(), '7');
@@ -63,6 +70,9 @@ try {
   assert.equal(await page.locator('#trainingHoldTimerBadge').textContent(), 'Hold · 3.0s');
   await advance(3000);
   assert.match(await page.locator('#trainingPhaseLabel').textContent(), /Relax/);
+  await waitSaved(1);
+  assert.deepEqual(await counts(), [1, 1, 2]); // Saved during set, without Save.
+  assert.equal(await page.locator('#trainingResultsCard').isVisible(), false);
   assert.deepEqual(await page.evaluate(() => cues.slice(0, 3)), [
     { at: 0, frequency: 440 }, { at: 7000, frequency: 880 }, { at: 10000, frequency: 660 },
   ]);
@@ -84,10 +94,12 @@ try {
     assert.equal(cues[i * 3 + 2].at - cues[i * 3 + 1].at, 3000);
   }
   assert.equal(await page.evaluate(() => fixture.audioContexts()), 1);
-  await page.locator('#saveTrainingShotBtn').click();
+  await waitSaved(30);
+  assert.equal(await page.locator('#saveTrainingShotBtn').isVisible(), false);
+  await page.locator('#discardTrainingShotBtn').click();
   await page.waitForFunction(() => !document.getElementById('trainingDisplayDefault').classList.contains('hidden'), null, { polling: 50 });
   const saved = await page.evaluate(async () => {
-    const db = await import('/app/core/db.js?v=aim-pipeline-163');
+    const db = await import('/app/core/db.js?v=aim-pipeline-164');
     return { shots: await db.getAll('shots'), traces: await db.getAll('shot_traces') };
   });
   assert.equal(saved.shots.length, 30);
@@ -107,11 +119,15 @@ try {
   const cueCount = await page.evaluate(() => cues.length);
   await advance(20000);
   assert.equal(await page.evaluate(() => cues.length), cueCount);
+  await waitSaved(1);
   await page.locator('#discardTrainingShotBtn').click();
   await page.locator('#startTrainingBtn').click();
   await page.waitForFunction(() => document.getElementById('trainingPhaseLabel').textContent.includes('Draw'), null, { polling: 50 });
+  await advance(18000); // One complete hold and part of the next.
+  await waitSaved(1);
   await page.evaluate(() => fixture.store.set({ connected: false }));
   assert.match(await progress(), /Sensor disconnected/);
+  assert.deepEqual(await counts(), [32, 32, 64]);
   await page.locator('#discardTrainingShotBtn').click();
   assert.equal(await page.locator('#startTrainingBtn').isDisabled(), true);
   await page.evaluate(() => fixture.store.set({ connected: true }));
@@ -159,14 +175,54 @@ try {
   assert.match(await progress(), /Rep 2 \/ 2/);
   for (let i = 0; i < 30 && !(await page.locator('#trainingResultsCard').isVisible()); i++) await advance(1000);
   assert.match(await progress(), /4 \/ 4 completed · 4 holds recorded/);
-  await page.locator('#saveTrainingShotBtn').click();
+  await waitSaved(4);
+  await page.locator('#discardTrainingShotBtn').click();
   await page.waitForFunction(() => !document.getElementById('trainingDisplayDefault').classList.contains('hidden'), null, { polling: 50 });
-  const customShots = await page.evaluate(async () => (await (await import('/app/core/db.js?v=aim-pipeline-163')).getAll('shots')).filter(s => s.label.endsWith('4s')));
+  const customShots = await page.evaluate(async () => (await (await import('/app/core/db.js?v=aim-pipeline-164')).getAll('shots')).filter(s => s.label.endsWith('4s')));
   assert.equal(customShots.length, 4);
   assert.ok(customShots.every(s => /Set [12]\/2 · Rep [12]\/2/.test(s.label)));
   assert.equal(await page.locator('#training_holdSeconds').isDisabled(), false);
   assert.equal(await page.locator('#training_holdSeconds').inputValue(), '4');
   await page.locator('#tabTraining').screenshot({ style: "header { position: static !important; }", path: join(tmpdir(), 'openfloat-training158-options.png') });
+  // Storage failure is visible, retry works, and repeated requests are idempotent.
+  await page.evaluate(async () => {
+    const db = await (await import('/app/core/db.js?v=aim-pipeline-164')).initDb();
+    window.originalTransaction = db.transaction;
+    db.transaction = function (stores, mode, ...args) {
+      if (mode === 'readwrite') throw new DOMException('Test quota exhausted', 'QuotaExceededError');
+      return originalTransaction.call(this, stores, mode, ...args);
+    };
+  });
+  await page.locator('#startTrainingBtn').click();
+  await page.waitForFunction(() => document.getElementById('pauseTrainingBtn').textContent === 'Pause', null, { polling: 50 });
+  await advance(6000);
+  await page.waitForFunction(() => document.getElementById('trainingSaveStatus').textContent.includes('1 not saved'), null, { polling: 50 });
+  assert.deepEqual(await counts(), [36, 36, 72]);
+  await page.locator('#cancelTrainingBtn').click();
+  await page.waitForFunction(() => !document.getElementById('saveTrainingShotBtn').disabled, null, { polling: 50 });
+  assert.equal(await page.locator('#saveTrainingShotBtn').isVisible(), true);
+  await page.evaluate(async () => {
+    const db = await (await import('/app/core/db.js?v=aim-pipeline-164')).initDb();
+    db.transaction = originalTransaction;
+  });
+  await page.locator('#saveTrainingShotBtn').click();
+  await waitSaved(1);
+  assert.deepEqual(await counts(), [37, 37, 74]);
+  const atomic = await page.evaluate(async () => {
+    const db = await import('/app/core/db.js?v=aim-pipeline-164');
+    let aborted = false;
+    try { await db.saveShotWithTrace({ id: 'atomic-test' }, { shot_id: 'atomic-test', payload: () => {} }); }
+    catch (error) { aborted = error.name === 'DataCloneError'; }
+    const missing = !(await db.get('shots', 'atomic-test')) && !(await db.get('shot_traces', 'atomic-test'));
+    const queueBefore = (await db.getAll('sync_queue')).length;
+    const shot = { id: 'atomic-test' }, trace = { shot_id: 'atomic-test', payload: [] };
+    await Promise.all([db.saveShotWithTrace(shot, trace), db.saveShotWithTrace(shot, trace)]);
+    return { aborted, missing, queueBefore, queueAfter: (await db.getAll('sync_queue')).length };
+  });
+  assert.deepEqual(atomic, { aborted: true, missing: true, queueBefore: 74, queueAfter: 76 });
+  await page.locator('#discardTrainingShotBtn').click();
+  await page.reload();
+  assert.deepEqual(await counts(), [38, 38, 76]); // Survives a new page context.
   assert.deepEqual(errors, []);
-  console.log(JSON.stringify({ fullProgram: true, cues: 90, savedHolds: 30, cancel: true, disconnect: true, suspension: true, mobile: true, errors }));
+  console.log(JSON.stringify({ fullProgram: true, cues: 90, savedHolds: 30, autosave: true, retry: true, atomicRollback: true, reload: true, cancel: true, disconnect: true, suspension: true, mobile: true, errors }));
 } finally { await browser.close(); }

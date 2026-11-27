@@ -1,8 +1,8 @@
-import { savedOfflineScore } from '../telemetry/offline-score.js?v=aim-pipeline-163';
-import { offlineScoreReport, offlineIssueLabel } from './offline-score.js?v=aim-pipeline-163';
-import { buildOfflineComparison, comparisonPoints, comparisonGroupMetrics, comparisonWindow } from '../telemetry/offline-comparison.js?v=aim-pipeline-163';
-import { aimTraceLayout } from './aim-trace.js?v=aim-pipeline-163';
-import { drawTargetFace } from './target-face.js?v=aim-pipeline-163';
+import { savedOfflineScore } from '../telemetry/offline-score.js?v=aim-pipeline-164';
+import { offlineScoreReport, offlineIssueLabel } from './offline-score.js?v=aim-pipeline-164';
+import { buildOfflineComparison, comparisonPoints, comparisonGroupMetrics, comparisonWindow } from '../telemetry/offline-comparison.js?v=aim-pipeline-164';
+import { aimTraceLayout } from './aim-trace.js?v=aim-pipeline-164';
+import { drawTargetFace } from './target-face.js?v=aim-pipeline-164';
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const n = (x) => Number.isFinite(x) ? x.toFixed(3) : '—';
 const colors = ['#007fa3', '#c43e62', '#7d51aa', '#008767', '#b56600', '#4366c5'];

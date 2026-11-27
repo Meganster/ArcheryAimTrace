@@ -14,7 +14,7 @@ try {
   await page.evaluate(async () => {
     document.querySelectorAll('.tab-view').forEach(e => e.classList.add('hidden-view'));
     document.getElementById('tabHistory').classList.remove('hidden-view');
-    const db = await import('/app/core/db.js?v=aim-pipeline-163');
+    const db = await import('/app/core/db.js?v=aim-pipeline-164');
     for (const [id, time] of [['a', '12:00'], ['b', '12:01'], ['c', '16:00']]) {
       await db.put('shots', { id, timestamp: `2026-11-25T${time}:00Z`, label: id, shot_score: 80 });
       await db.put('shot_traces', { shot_id: id, sample_rate_hz: 50, payload: [] });
@@ -37,7 +37,7 @@ try {
     finally { IDBDatabase.prototype.transaction = transact; }
     if (!aborted || (await db.getAll('shots')).length !== 3 || (await db.getAll('shot_traces')).length !== 3 || (await db.getAll('sync_queue')).length !== 4) throw Error('Atomic rollback failed');
     const { createStore, EventBus } = await import('/app/core/store.js');
-    const { initHistory } = await import('/app/ui/history.js?v=aim-pipeline-163');
+    const { initHistory } = await import('/app/ui/history.js?v=aim-pipeline-164');
     const store = createStore({ reviewMode: false, connected: false, recentShots: [], threshold: 12 });
     const el = Object.fromEntries([...document.querySelectorAll('[id]')].map(e => [e.id, e]));
     const history = initHistory({ store, state: store.get(), bus: new EventBus(), el, selectViewTab() {}, saveSettingsToCache() {} });

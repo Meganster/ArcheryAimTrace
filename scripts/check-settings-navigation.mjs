@@ -8,7 +8,7 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   const base = process.env.BASE_URL || 'http://127.0.0.1:4180';
   await page.goto(base, { waitUntil: 'networkidle' });
-  await page.waitForFunction(() => document.body.dataset.appBuild === 'aim-pipeline-163');
+  await page.waitForFunction(() => document.body.dataset.appBuild === 'aim-pipeline-164');
   assert.equal(await page.locator('.tab-navigation button').count(), 4);
   for (const id of ['navBowShopBtn', 'navGuideBtn', 'demoBtn', 'zeroBtn', 'zeroYawBtn', 'captureAimBtn', 'gyroCalibrateBtn', 'levelRangeSlider']) {
     assert.equal(await page.locator(`#tabSettings #${id}`).count(), 1, `${id} is in Settings`);

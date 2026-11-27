@@ -17,9 +17,9 @@ try {
    };
  });
  await page.goto(process.env.BASE_URL || 'http://127.0.0.1:4178/',{waitUntil:'networkidle'});
- await page.waitForFunction(()=>document.body.dataset.appBuild==='aim-pipeline-163');
+ await page.waitForFunction(()=>document.body.dataset.appBuild==='aim-pipeline-164');
  await page.evaluate(async()=>{
-  const {put,getAll,remove}=await import('/app/core/db.js?v=aim-pipeline-163');
+  const {put,getAll,remove}=await import('/app/core/db.js?v=aim-pipeline-164');
   for(const s of await getAll('shots')){await remove('shot_traces',s.id);await remove('shots',s.id);}
   for(let j=0;j<6;j++){
    const id=`fixture-${j}`, group=j<3?'a':'b', payload=[];
@@ -40,7 +40,7 @@ try {
  await page.waitForFunction(()=>document.querySelector('[data-group-id="group-a"] .history-title')?.textContent.includes('Session #21'));
  assert.match(await groupA().textContent(),/Missing records 20/);
  await page.reload({waitUntil:'networkidle'});
- await page.waitForFunction(()=>document.body.dataset.appBuild==='aim-pipeline-163');
+ await page.waitForFunction(()=>document.body.dataset.appBuild==='aim-pipeline-164');
  await page.locator('#navHistoryBtn').click();
  await page.waitForFunction(()=>document.querySelector('[data-group-id="group-a"] .history-title')?.textContent.includes('Session #21'));
  await groupA().locator('[data-group-analyze]').click();
@@ -50,7 +50,7 @@ try {
  assert.equal(await page.locator('#offlineComparisonPanel .comparison-individual-shots').getAttribute('open'),null);
  assert.equal(await page.locator('#offlineComparisonPanel [data-focus="fixture-0"]').isVisible(),false);
  await page.locator('#offlineComparisonPanel .comparison-individual-shots > summary').click();
- const get=async id=>page.evaluate(async id=>(await import('/app/core/db.js?v=aim-pipeline-163')).get('shot_traces',id),id);
+ const get=async id=>page.evaluate(async id=>(await import('/app/core/db.js?v=aim-pipeline-164')).get('shot_traces',id),id);
  const scored=await get('fixture-0');
  assert.equal(scored.analysis.score.status,'complete');
  assert.ok(Number.isInteger(scored.analysis.score.total));
@@ -190,7 +190,7 @@ try {
  await page.locator('#offlineComparisonPanel').screenshot({path:join(tmpdir(),'openfloat-comparison144.png')});
  const a=await get('fixture-0'), b=await get('fixture-3'), other=await get('fixture-4');
  assert.deepEqual(a.raw,{bytes:[0,2,3]});assert.ok(a.payload.every(p=>!p.aim));assert.equal(b.analysis.parameters.distanceMeters,18);assert.equal(other.analysis.parameters.distanceMeters,30);
- const groups=await page.evaluate(async()=>(await(await import('/app/core/db.js?v=aim-pipeline-163')).getAll('shots')).map(s=>s.offline_series_id));
+ const groups=await page.evaluate(async()=>(await(await import('/app/core/db.js?v=aim-pipeline-164')).getAll('shots')).map(s=>s.offline_series_id));
  assert.deepEqual(groups,['group-a','group-a','group-a','group-b','group-b','group-b']);
  await page.locator('[data-pair]').click();
  await page.waitForFunction(()=>document.querySelector('#reviewCompareSelect').value==='fixture-3');
@@ -210,7 +210,7 @@ try {
  assert.match(await page.locator('#offlineComparisonPanel').innerText(),/1 excluded/);
  await groupA().locator('[data-shot-sort]').selectOption('score-asc');
  await page.reload({waitUntil:'networkidle'});
- await page.waitForFunction(()=>document.body.dataset.appBuild==='aim-pipeline-163');
+ await page.waitForFunction(()=>document.body.dataset.appBuild==='aim-pipeline-164');
  await page.locator('#navHistoryBtn').click();
  await groupA().locator('[data-shot-sort]').waitFor();
  assert.equal(await groupA().locator('[data-shot-sort]').inputValue(),'score-asc');
